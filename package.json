@@ -1,0 +1,27 @@
+{
+  "name": "transportation_chatbot",
+  "version": "1.0.0",
+  "description": "",
+  "homepage": "https://github.com/360vforceai/transportation_chatbot#readme",
+  "bugs": {
+    "url": "https://github.com/360vforceai/transportation_chatbot/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/360vforceai/transportation_chatbot.git"
+  },
+  "license": "ISC",
+  "author": "",
+  "type": "commonjs",
+  "main": "index.js",
+  "scripts": {
+    "start": "node src/bot/index.js",
+    "register": "node src/bot/registerCommands.js"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.108.1",
+    "discord.js": "^14.26.4",
+    "dotenv": "^17.4.2",
+    "openai": "^6.42.0"
+  }
+}
