@@ -5,13 +5,37 @@ const logger = require('../utils/logger');
 const commands = [
   {
     name: 'ask',
-    description: '',
+    description: 'Ask anything about Rutgers transportation',
     options: [
       {
         name: 'question',
         type: 3,
-        description: '',
+        description: 'Your question',
         required: true
+      }
+    ]
+  },
+  {
+    name: 'parking',
+    description: 'Find nearby parking lots, permit eligibility, and walking distance',
+    options: [
+      {
+        name: 'destination',
+        type: 3,
+        description: 'Building or location you are headed to',
+        required: true
+      },
+      {
+        name: 'permit',
+        type: 3,
+        description: 'Your permit type (e.g. A, B, L, Commuter)',
+        required: false
+      },
+      {
+        name: 'time',
+        type: 3,
+        description: 'Time you plan to park, 24hr format e.g. 14:30 (defaults to now)',
+        required: false
       }
     ]
   },

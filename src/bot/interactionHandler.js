@@ -1,6 +1,7 @@
 const { isRateLimited, recordRequest, getRemainingSeconds } = require('../utils/rateLimiter');
 const { splitMessage } = require('../utils/messageUtils');
 const { getResponse, getRouterDecision } = require('../agents/aiClient');
+const { findNearestLots, checkPermitEligibility } = require('../utils/parkingHelper');
 const {
   getShortTermHistory,
   searchLongTermMemories,
@@ -148,10 +149,39 @@ async function handleNavigate(interaction, userId, username) {
 //       check live availability if API available, return embed with lot list.
 
 async function handleParking(interaction, userId, username) {
-  // const destination = interaction.options.getString('destination');
-  // const permit      = interaction.options.getString('permit');
-  await interaction.editReply('🅿️ `/parking` — Parking assistant coming soon.');
-  logger.info('Handled /parking (stub)', { userId });
+    const destination = interaction.options.getString('destination');
+    const permit = interaction.options.getString('permit');
+    const time = interaction.options.getString('time') ||
+      new Date().toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit' });
+
+    const { building, lots } = findNearestLots(destination);
+
+    if (!building) {
+      await interaction.editReply(
+        `🅿️ I couldn't find "${destination}" in my building list yet. Try a campus student center for now (e.g. "Busch Student Center").`
+      );
+      return;
+    }
+
+    const lines = lots.map((lot) => {
+      const { eligible, permitOk, timeOk } = checkPermitEligibility(lot, permit, time);
+      let status = '✅ Open to all';
+      if (permit) {
+        status = eligible ? '✅ Eligible' : !permitOk ? '❌ Permit not valid here' : '❌ Outside hours';
+      } else if (!timeOk) {
+        status = '⚠️ Outside posted hours';
+      }
+      return `**${lot.name}** (${lot.campus}) — ${lot.distanceMiles.toFixed(2)} mi, ~${lot.walkMinutes} min walk — ${status}`;
+    });
+
+    const reply = [
+      `🅿️ Nearest lots to **${building.name}**:`,
+      '',
+      ...lines
+    ].join('\n');
+
+    await interaction.editReply(reply);
+    logger.info('Handled /parking', { userId, destination, permit, time });
 }
 
 // ── /transit ─────────────────────────────────────────────────────────────────

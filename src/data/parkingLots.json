@@ -1,0 +1,16 @@
+{
+  "buildings": [
+    { "name": "Hill Center", "campus": "Busch", "lat": 40.5226, "lng": -74.4602 },
+    { "name": "Busch Student Center", "campus": "Busch", "lat": 40.5236, "lng": -74.4607 },
+    { "name": "Livingston Student Center", "campus": "Livingston", "lat": 40.5235, "lng": -74.4392 },
+    { "name": "College Ave Student Center", "campus": "College Ave", "lat": 40.5008, "lng": -74.4474 },
+    { "name": "Cook/Douglass Student Center", "campus": "Cook/Douglass", "lat": 40.4789, "lng": -74.4339 }
+  ],
+  "lots": [
+    { "id": "lot64", "name": "Lot 64", "campus": "Busch", "lat": 40.5210, "lng": -74.4580, "permits": ["B", "Commuter"], "hours": { "start": "00:00", "end": "23:59" } },
+    { "id": "lot53", "name": "Lot 53A", "campus": "Livingston", "lat": 40.5228, "lng": -74.4400, "permits": ["L", "Commuter"], "hours": { "start": "07:00", "end": "22:00" } },
+    { "id": "lot8", "name": "Lot 8", "campus": "College Ave", "lat": 40.5018, "lng": -74.4460, "permits": ["A", "Visitor"], "hours": { "start": "00:00", "end": "23:59" } },
+    { "id": "yalegarage", "name": "Yale Ave Garage", "campus": "College Ave", "lat": 40.5012, "lng": -74.4490, "permits": ["A", "Commuter", "Visitor"], "hours": { "start": "00:00", "end": "23:59" } },
+    { "id": "lot32", "name": "Lot 32", "campus": "Cook/Douglass", "lat": 40.4795, "lng": -74.4350, "permits": ["C/D", "Commuter"], "hours": { "start": "06:00", "end": "21:00" } }
+  ]
+}
