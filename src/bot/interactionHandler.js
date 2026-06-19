@@ -15,12 +15,17 @@ const {
   // formatParkingContext,
   // searchBuildings,
   // formatBuildingContext,
-  // searchAlerts,
   // formatAlertContext,
-  // searchNJTransit,
-  // formatNJTransitContext,
   // fetchLiveBusLocations,
   // fetchParkingAvailability,
+  searchNJTransit,
+  formatNJTransitContext,
+  fetchLiveAlerts,
+  getAlertsForRoadway,
+  fetchPortAuthorityAlerts, 
+  formatPortAuthorityEmbed,
+  fetchACEAlerts, 
+  formatACEEmbed,
 } = require('../agents/transportationClient');
 const logger = require('../utils/logger');
 
@@ -145,8 +150,6 @@ async function handleNavigate(interaction, userId, username) {
 // Parking assistant — finds nearby lots, permit requirements, and walking distance.
 // Data sources: parking (RAG), buildings (RAG), live parking availability API
 // Options: destination (required), permit (optional — e.g. "A", "B", "C", "staff")
-// TODO: query parking table filtered by campus/proximity to destination,
-//       check live availability if API available, return embed with lot list.
 
 async function handleParking(interaction, userId, username) {
     const destination = interaction.options.getString('destination');
@@ -227,17 +230,85 @@ async function handleCompare(interaction, userId, username) {
   logger.info('Handled /compare (stub)', { userId });
 }
 
-// ── /alerts ──────────────────────────────────────────────────────────────────
-// Transportation alerts — shows live delays, detours, closures, and construction.
-// Data sources: alerts (RAG + live scrape of Rutgers transportation site)
-// Options: route (optional — filter by specific bus route or campus area)
-// TODO: fetch live alerts from Rutgers transportation website or RSS feed,
-//       store/cache in alerts table, return embed with active alerts sorted by severity.
+// ── /alerts ─────────────────────────────────────────────────────────────────
 
 async function handleAlerts(interaction, userId, username) {
-  // const route = interaction.options.getString('route');
-  await interaction.editReply('⚠️ `/alerts` — Transportation alerts coming soon.');
-  logger.info('Handled /alerts (stub)', { userId });
+  const roadway = interaction.options.getString('roadway');
+ 
+  // Fire sources in parallel – each degrades gracefully if blocked
+  const [njtaResult, panynjResult, aceResult] = await Promise.allSettled([
+    // NJTA: Turnpike + GSP (already working)
+    getAlertsForRoadway(roadway === 'ace' || roadway === 'panynj' ? 'all' : roadway),
+ 
+    // Port Authority: bridges, tunnels, PATH
+    (roadway === 'panynj' || roadway === 'all') ? fetchPortAuthorityAlerts() : Promise.resolve(null),
+ 
+    // Atlantic City Expressway
+    (roadway === 'ace' || roadway === 'all') ? fetchACEAlerts() : Promise.resolve(null),
+  ]);
+ 
+  const embeds = [];
+ 
+  // ── NJTA embed (Turnpike + GSP) ───────────────────────────────────────────
+  if (roadway !== 'ace' && roadway !== 'panynj') {
+    const { turnpike, gsp } = njtaResult.status === 'fulfilled'
+      ? njtaResult.value
+      : { turnpike: [], gsp: [] };
+ 
+    const allAlerts = [...turnpike, ...gsp];
+ 
+    if (allAlerts.length === 0) {
+      embeds.push({
+        color: 0x57F287,
+        title: `✅ No Major Delays — ${
+          roadway === 'turnpike' ? 'NJ Turnpike' :
+          roadway === 'gsp' ? 'Garden State Parkway' : 'Turnpike & Parkway'
+        }`,
+        description: 'No major delays currently reported.',
+        footer: { text: 'Live data from NJTA · njta.gov' },
+        timestamp: new Date().toISOString()
+      });
+    } else {
+      const fields = allAlerts.slice(0, 10).map(a => ({
+        name: `${a.is_major ? '🔴' : '🟡'} ${a.types || 'Alert'} — ${a.relative || ''}`,
+        value: (a.description || 'No details').slice(0, 200),
+        inline: false
+      }));
+ 
+      embeds.push({
+        color: allAlerts.some(a => a.is_major) ? 0xED4245 : 0xFEE75C,
+        title: `⚠️ Traffic Alerts — ${
+          roadway === 'turnpike' ? 'NJ Turnpike' :
+          roadway === 'gsp' ? 'Garden State Parkway' : 'Turnpike & Parkway'
+        }`,
+        description: `${allAlerts.length} alert(s) found.`,
+        fields,
+        footer: { text: 'Live data from NJTA · njta.gov' },
+        timestamp: new Date().toISOString()
+      });
+    }
+  }
+ 
+  // ── Port Authority embed ──────────────────────────────────────────────────
+  if (panynjResult.status === 'fulfilled' && panynjResult.value !== null) {
+    embeds.push(formatPortAuthorityEmbed(panynjResult.value));
+  }
+ 
+  // ── Atlantic City Expressway embed ────────────────────────────────────────
+  if (aceResult.status === 'fulfilled' && aceResult.value !== null) {
+    embeds.push(formatACEEmbed(aceResult.value));
+  }
+ 
+  // Discord allows max 10 embeds per message
+  const toSend = embeds.slice(0, 10);
+ 
+  if (toSend.length === 0) {
+    await interaction.editReply('No alert data available right now. Please try again shortly.');
+    return;
+  }
+ 
+  await interaction.editReply({ embeds: toSend });
+  logger.info('Handled /alerts', { userId, roadway, embedCount: toSend.length });
 }
 
 // ── /access ──────────────────────────────────────────────────────────────────

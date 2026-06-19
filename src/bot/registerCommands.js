@@ -4,6 +4,61 @@ const logger = require('../utils/logger');
 
 const commands = [
   {
+    name: 'transit',
+    description: 'Get NJ Transit train and bus schedules to/from Rutgers',
+    options: [
+      {
+        name: 'destination',
+        type: 3,
+        description: 'Where are you going? (e.g. NYC Penn Station, Trenton, Newark)',
+        required: true
+      },
+      {
+        name: 'time',
+        type: 3,
+        description: 'What time? (e.g. "now", "3:30pm") — defaults to now',
+        required: false
+      }
+    ]
+  },
+  {
+  name: 'alerts',
+  description: 'Check live traffic alerts across NJ roadways and transit facilities',
+  options: [
+    {
+      name: 'roadway',
+      type: 3,
+      description: 'Which roadway or facility to check',
+      required: true,
+      choices: [
+        { name: 'NJ Turnpike', value: 'turnpike' },
+        { name: 'Garden State Parkway', value: 'gsp' },
+        { name: 'Turnpike + Parkway (both)', value: 'all' },
+        { name: 'Atlantic City Expressway', value: 'ace' },
+        { name: 'Port Authority (bridges/tunnels/PATH)', value: 'panynj' },
+      ]
+    }
+  ]
+},
+  {
+    name: 'access',
+    description: 'Find accessible routes, entrances, and transportation options',
+    options: [
+      {
+        name: 'destination',
+        type: 3,
+        description: 'Which building or location? (e.g. Hill Center, Busch Student Center)',
+        required: true
+      },
+      {
+        name: 'need',
+        type: 3,
+        description: 'Specific need (e.g. elevator, ramp, accessible parking)',
+        required: false
+      }
+    ]
+  },
+  {
     name: 'ask',
     description: 'Ask anything about Rutgers transportation',
     options: [
