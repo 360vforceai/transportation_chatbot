@@ -12,5 +12,14 @@
     { "id": "lot8", "name": "Lot 8", "campus": "College Ave", "lat": 40.5018, "lng": -74.4460, "permits": ["A", "Visitor"], "hours": { "start": "00:00", "end": "23:59" } },
     { "id": "yalegarage", "name": "Yale Ave Garage", "campus": "College Ave", "lat": 40.5012, "lng": -74.4490, "permits": ["A", "Commuter", "Visitor"], "hours": { "start": "00:00", "end": "23:59" } },
     { "id": "lot32", "name": "Lot 32", "campus": "Cook/Douglass", "lat": 40.4795, "lng": -74.4350, "permits": ["C/D", "Commuter"], "hours": { "start": "06:00", "end": "21:00" } }
-  ]
+  ],
+  "permitRules": {
+    "primary": { "days": "Mon-Sun", "start": "06:00", "end": "23:59", "lotTypes": ["commuter"], "sameCampusOnly": true },
+    "secondary": { "days": "Mon-Fri", "start": "10:00", "end": "23:59", "lotTypes": ["commuter"], "sameCampusOnly": true, "excludedCampuses": ["Busch", "College Ave"] },
+    "flex": { "days": "Mon-Fri", "start": "17:00", "end": "23:59", "lotTypes": ["commuter"], "sameCampusOnly": false },
+    "resident": { "days": "Mon-Sun", "start": "00:00", "end": "23:59", "lotTypes": ["resident"], "sameCampusOnly": true },
+    "residentFlex": { "days": "Mon-Fri", "start": "17:00", "end": "23:59", "lotTypes": ["commuter"], "sameCampusOnly": false }
+  }
+
+
 }

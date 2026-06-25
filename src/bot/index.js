@@ -1,5 +1,5 @@
 require('dotenv').config();
-const { Client, GatewayIntentBits } = require('discord.js');
+const { Client, GatewayIntentBits  } = require('discord.js');
 const logger = require('../utils/logger');
 const { handleInteraction, handleAutocomplete } = require('./interactionHandler');
 

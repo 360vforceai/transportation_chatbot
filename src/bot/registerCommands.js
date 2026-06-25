@@ -75,24 +75,43 @@ const commands = [
     description: 'Find nearby parking lots, permit eligibility, and walking distance',
     options: [
       {
-        name: 'destination',
-        type: 3,
-        description: 'Building or location you are headed to',
-        required: true
-      },
-      {
-        name: 'permit',
-        type: 3,
-        description: 'Your permit type (e.g. A, B, L, Commuter)',
-        required: false
-      },
-      {
-        name: 'time',
-        type: 3,
-        description: 'Time you plan to park, 24hr format e.g. 14:30 (defaults to now)',
-        required: false
-      }
+    name: 'destination',
+    type: 3,
+    description: 'Building or location you are headed to',
+    required: true,
+    autocomplete: true
+
+  },
+  {
+    name: 'permit_type',
+    type: 3,
+    description: 'Your permit class',
+    required: false,
+    choices: [
+      { name: 'Commuter', value: 'commuter' },
+      { name: 'Resident', value: 'resident' }
     ]
+  },
+  {
+    name: 'home_campus',
+    type: 3,
+    description: 'The campus your permit is registered to',
+    required: false,
+    choices: [
+      { name: 'Busch', value: 'Busch' },
+      { name: 'Livingston', value: 'Livingston' },
+      { name: 'College Ave', value: 'College Ave' },
+      { name: 'Cook', value: 'Cook' },
+      { name: 'Douglass', value: 'Douglass' }
+    ]
+  },
+  {
+      name: 'time',
+      type: 3,
+      description: 'Time you plan to park, 24hr format e.g. 14:30 (defaults to now)',
+      required: false
+  }
+  ]
   },
   {
     name: 'help',

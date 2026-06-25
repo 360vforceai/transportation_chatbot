@@ -1,7 +1,7 @@
 const { isRateLimited, recordRequest, getRemainingSeconds } = require('../utils/rateLimiter');
 const { splitMessage } = require('../utils/messageUtils');
 const { getResponse, getRouterDecision } = require('../agents/aiClient');
-const { findNearestLots, checkPermitEligibility } = require('../utils/parkingHelper');
+const { findBuilding, findNearestLots, findResidentLots, findFlexLots, checkPermitEligibility } = require('../utils/parkingHelper');
 const {
   getShortTermHistory,
   searchLongTermMemories,
@@ -18,9 +18,9 @@ const {
   // formatAlertContext,
   // fetchLiveBusLocations,
   // fetchParkingAvailability,
-  searchNJTransit,
+  //searchNJTransit,
   formatNJTransitContext,
-  fetchLiveAlerts,
+ // fetchLiveAlerts,
   getAlertsForRoadway,
   fetchPortAuthorityAlerts, 
   formatPortAuthorityEmbed,
@@ -31,6 +31,15 @@ const logger = require('../utils/logger');
 
 // Prevent Discord Gateway from replaying the same interaction, avoiding duplicate processing.
 const handledInteractions = new Map();
+
+const { createParkingEmbed } = require('../utils/embedFactory');
+
+const { createClient } = require('@supabase/supabase-js');
+
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_KEY
+);
 
 // Periodically purge IDs older than 10 minutes (interaction tokens expire after 15 min).
 setInterval(() => {
@@ -152,53 +161,93 @@ async function handleNavigate(interaction, userId, username) {
 // Options: destination (required), permit (optional — e.g. "A", "B", "C", "staff")
 
 async function handleParking(interaction, userId, username) {
-    const destination = interaction.options.getString('destination');
-    const permit = interaction.options.getString('permit');
-    const time = interaction.options.getString('time') ||
-      new Date().toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit' });
+  const destination = interaction.options.getString('destination');
+  const permitType = interaction.options.getString('permit_type');
+  const homeCampus = interaction.options.getString('home_campus');
+  const time = interaction.options.getString('time') ||
+    new Date().toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit' });
 
-    const { building, lots } = findNearestLots(destination);
 
-    if (!building) {
+  const building = await findBuilding(destination);
+
+  if (!building) {
+    await interaction.editReply(
+      `🅿️ I couldn't find "${destination}" in my building list. Try searching by a specific hall or student center name.`
+    );
+    return;
+  }
+
+  // ── Dorm branch ───────────────────────────────────────────────────────────
+  if (building.is_dorm) {
+    if (!permitType) {
       await interaction.editReply(
-        `🅿️ I couldn't find "${destination}" in my building list yet. Try a campus student center for now (e.g. "Busch Student Center").`
+        `🏠 **${building.name}** is a residence hall. Re-run \`/parking\` with your \`permit_type\` (Commuter or Resident) and \`home_campus\` to see your parking options.`
       );
       return;
     }
 
-    const lines = lots.map((lot) => {
-      const { eligible, permitOk, timeOk } = checkPermitEligibility(lot, permit, time);
-      let status = '✅ Open to all';
-      if (permit) {
-        status = eligible ? '✅ Eligible' : !permitOk ? '❌ Permit not valid here' : '❌ Outside hours';
-      } else if (!timeOk) {
-        status = '⚠️ Outside posted hours';
-      }
-      return `**${lot.name}** (${lot.campus}) — ${lot.distanceMiles.toFixed(2)} mi, ~${lot.walkMinutes} min walk — ${status}`;
-    });
+    if (permitType === 'resident') {
+      const campus = homeCampus || building.campus;
+      const [homeLots, flexLots] = await Promise.all([
+        findResidentLots(building, campus),
+        findFlexLots(building)
+      ]);
 
-    const reply = [
-      `🅿️ Nearest lots to **${building.name}**:`,
-      '',
-      ...lines
-    ].join('\n');
+      const lots = [
+        ...homeLots.map(l => ({ ...l, status: '✅ Your home lot (24/7)' })),
+        ...flexLots.map(l => ({ ...l, status: '✅ Eligible (resident flex, 5PM–12AM Mon–Fri)' }))
+      ];
 
-    await interaction.editReply(reply);
-    logger.info('Handled /parking', { userId, destination, permit, time });
-}
+      logger.info('lots being passed to embed', lots.map(l => ({ name: l.name, status: l.status })));
 
-// ── /transit ─────────────────────────────────────────────────────────────────
-// NJ Transit integration — train and bus schedules for commuters to/from Rutgers.
-// Data sources: njtransit (RAG), NJ Transit API (live if available)
-// Options: destination (required), time (optional — defaults to now)
-// TODO: query njtransit table for matching routes, optionally hit NJ Transit API
-//       for live departures from New Brunswick station. Return schedule embed.
 
-async function handleTransit(interaction, userId, username) {
-  // const destination = interaction.options.getString('destination');
-  // const time        = interaction.options.getString('time');
-  await interaction.editReply('🚆 `/transit` — NJ Transit schedules coming soon.');
-  logger.info('Handled /transit (stub)', { userId });
+      const embed = createParkingEmbed(building, lots);
+      await interaction.editReply({ embeds: [embed] });
+      logger.info('Handled /parking (resident dorm)', { userId, destination, campus, time });
+      return;
+    }
+
+    if (permitType === 'commuter') {
+      const { lots: rawLots } = await findNearestLots(building);
+
+      const lots = await Promise.all(rawLots.map(async (lot) => {
+        const { eligible, matchedRule } = await checkPermitEligibility(lot, permitType, homeCampus, time);
+        const status = eligible && matchedRule === 'flex' ? '✅ Eligible (flex time)'
+          : eligible ? '✅ Eligible'
+          : '❌ Not available until 5pm';
+        return { ...lot, status };
+      }));
+
+      const embed = createParkingEmbed(building, lots);
+      await interaction.editReply({ embeds: [embed] });
+      logger.info('Handled /parking (commuter dorm)', { userId, destination, homeCampus, time });
+      return;
+    }
+  }
+
+  // ── Non-dorm branch ───────────────────────────────────────────────────────
+  const { lots: rawLots } = await findNearestLots(building);
+
+  if (!rawLots.length) {
+    await interaction.editReply(`🅿️ No lots found near **${building.name}**.`);
+    return;
+  }
+
+  const lots = await Promise.all(rawLots.map(async (lot) => {
+    const { eligible, matchedRule } = await checkPermitEligibility(lot, permitType, homeCampus, time);
+    let status = '✅ Open to all';
+    if (permitType) {
+      if (eligible && matchedRule === 'flex') status = '✅ Eligible (flex time)';
+      else if (eligible && matchedRule === 'residentFlex') status = '✅ Eligible (resident flex)';
+      else if (eligible) status = '✅ Eligible';
+      else status = '❌ Not available until 5pm';
+    }
+    return { ...lot, status };
+  }));
+
+  const embed = createParkingEmbed(building, lots);
+  await interaction.editReply({ embeds: [embed] });
+  logger.info('Handled /parking', { userId, destination, permitType, homeCampus, time });
 }
 
 // ── /leavenow ────────────────────────────────────────────────────────────────
@@ -207,6 +256,11 @@ async function handleTransit(interaction, userId, username) {
 // Options: destination (required), arrival_time (required), from (optional — defaults to current campus)
 // TODO: calculate travel time from bus routes + walking, subtract from arrival_time,
 //       check alerts for delays, return recommended departure time embed.
+
+async function handleTransit(interaction, userId, username) {
+  await interaction.editReply('🚆 `/transit` — NJ Transit schedules coming soon.');
+  logger.info('Handled /transit (stub)', { userId });
+}
 
 async function handleLeaveNow(interaction, userId, username) {
   // const destination   = interaction.options.getString('destination');
@@ -425,4 +479,45 @@ async function handleInteraction(interaction) {
   }
 }
 
-module.exports = { handleInteraction };
+async function handleAutocomplete(interaction) {
+  console.log("Autocomplete called!");
+
+  try {
+    // Only autocomplete for /parking
+    if (interaction.commandName !== "parking") {
+      return interaction.respond([]);
+    }
+
+    const focused = interaction.options.getFocused();
+
+    const { data, error } = await supabase
+      .from("app_rutgers_buildings")
+      .select("name, campus")
+      .or(
+        `name.ilike.${focused}%,name.ilike.%${focused}%`
+      )
+      .limit(25);
+
+    if (error) {
+      logger.error("Autocomplete failed:", error.message);
+      return interaction.respond([]);
+    }
+
+    await interaction.respond(
+      data.map((building) => ({
+        name: `${building.name} • ${building.campus.replace(
+          "Rutgers University - ",
+          ""
+        )}`,
+        value: building.name
+      }))
+    );
+  } catch (err) {
+    logger.error("Autocomplete exception:", err.message);
+    return interaction.respond([]);
+  }
+}
+
+module.exports = { handleInteraction,
+   handleAutocomplete
+};
