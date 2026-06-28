@@ -5,19 +5,21 @@ const logger = require('../utils/logger');
 const commands = [
   {
     name: 'transit',
-    description: 'Get NJ Transit train and bus schedules to/from Rutgers',
+    description: 'Get real-time NJ Transit train departures from a station',
     options: [
       {
-        name: 'destination',
+        name: 'station',
         type: 3,
-        description: 'Where are you going? (e.g. NYC Penn Station, Trenton, Newark)',
-        required: true
+        description: 'Station name (e.g. "New Brunswick", "Newark Penn Station", "Trenton")',
+        required: true,
       },
       {
-        name: 'time',
-        type: 3,
-        description: 'What time? (e.g. "now", "3:30pm") — defaults to now',
-        required: false
+        name: 'limit',
+        type: 4, // INTEGER
+        description: 'How many departures to show (default 8, max 15)',
+        required: false,
+        min_value: 1,
+        max_value: 15,
       }
     ]
   },
@@ -42,19 +44,25 @@ const commands = [
 },
   {
     name: 'access',
-    description: 'Find accessible routes, entrances, and transportation options',
+    description: 'Get accessibility info — buses, parking, entrances, RADR services, paratransit',
     options: [
       {
-        name: 'destination',
-        type: 3,
-        description: 'Which building or location? (e.g. Hill Center, Busch Student Center)',
-        required: true
+        name: 'topic',
+        type: 3, // STRING
+        description: 'What do you need? (e.g. "wheelchair bus", "accessible parking", "elevator broken", "paratransit")',
+        required: true,
       },
       {
-        name: 'need',
+        name: 'campus',
         type: 3,
-        description: 'Specific need (e.g. elevator, ramp, accessible parking)',
-        required: false
+        description: 'Which campus? (optional)',
+        required: false,
+        choices: [
+          { name: 'New Brunswick (all)', value: 'new_brunswick' },
+          { name: 'Newark', value: 'newark' },
+          { name: 'Camden', value: 'camden' },
+          { name: 'All campuses', value: 'all' },
+        ]
       }
     ]
   },
