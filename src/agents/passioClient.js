@@ -42,10 +42,14 @@ async function fetchRoutes() {
     const raw = await sendPassioRequest(url, body);
     const routesRaw = Array.isArray(raw) ? raw : (raw.all || []);
 
-    // Filter to only routes belonging to this system (userId === SYSTEM_ID)
-    // This removes routes from other Rutgers campuses that share the feed
+    // Exclude known non-NB routes that share system 1268
+    const NON_NB = new Set([
+      'camden', 'campus connect', 'campus connect express',
+      'penn station local', 'penn station express'
+    ]);
+
     const routes = routesRaw
-      .filter((r) => String(r.userId) === SYSTEM_ID)
+      .filter((r) => !NON_NB.has((r.name || '').toLowerCase()))
       .map((r) => ({
         id: r.id,
         groupId: r.groupId,
@@ -60,7 +64,7 @@ async function fetchRoutes() {
 
     logger.info('passioClient.fetchRoutes succeeded', {
       count: routes.length,
-      routes: routes.map((r) => `${r.shortName}(${r.name})`)
+      routes: routes.map((r) => r.name)
     });
     _routesCache = { data: routes, fetchedAt: now };
     return routes;
@@ -185,12 +189,13 @@ async function getVehiclesForRoute(routeId) {
   return vehicles.filter((v) => v.routeId == routeId && !v.outOfService);
 }
 
-// Returns only vehicles on routes belonging to this Passio system.
-// Filters out buses from other campuses that share the live feed.
+// Returns only vehicles on NB campus routes (excludes Camden, Penn Station, etc.)
 async function filterNBVehicles(vehicles) {
   const routes = await fetchRoutes();
-  const validRouteIds = new Set(routes.map((r) => String(r.id)));
-  return vehicles.filter((v) => validRouteIds.has(String(v.routeId)) && !v.outOfService);
+  const validRouteNames = new Set(routes.map((r) => (r.name || '').toLowerCase()));
+  return vehicles.filter((v) =>
+    validRouteNames.has((v.routeName || '').toLowerCase())
+  );
 }
 
 // ─── System alerts ──────────────────────────────────────────────────────────
@@ -284,28 +289,52 @@ async function findNearestStops(lat, lng, limit = 3) {
 // Overnight routes only run ~3AM-6AM Mon-Thu — heavily penalize during day.
 
 const ROUTE_SCHEDULES = {
-  // Daytime intercampus routes
-  'LX':       { startH: 6,  startM: 0,  endH: 3,  endM: 30, overnight: false },
-  'EE':       { startH: 6,  startM: 0,  endH: 3,  endM: 30, overnight: false },
-  'H':        { startH: 6,  startM: 0,  endH: 3,  endM: 30, overnight: false },
-  'A':        { startH: 6,  startM: 0,  endH: 3,  endM: 30, overnight: false },
-  'B':        { startH: 6,  startM: 0,  endH: 3,  endM: 30, overnight: false },
-  'C':        { startH: 6,  startM: 0,  endH: 3,  endM: 30, overnight: false },
-  'REXL':     { startH: 7,  startM: 0,  endH: 23, endM: 0,  overnight: false },
-  'REXB':     { startH: 7,  startM: 0,  endH: 23, endM: 0,  overnight: false },
-  'F':        { startH: 7,  startM: 0,  endH: 21, endM: 0,  overnight: false },
-  // Overnight routes — only valid 3AM-6AM Mon-Thu
-  'Overnight 1': { startH: 3, startM: 0, endH: 6, endM: 0, overnight: true },
-  'Overnight 2': { startH: 3, startM: 0, endH: 6, endM: 0, overnight: true },
+  // Daytime intercampus routes — no penalty
+  'LX':       { type: 'semester' },
+  'EE':       { type: 'semester' },
+  'H':        { type: 'semester' },
+  'A':        { type: 'semester' },
+  'B':        { type: 'semester' },
+  'C':        { type: 'semester' },
+  'REXL':     { type: 'semester' },
+  'REXB':     { type: 'semester' },
+  'F':        { type: 'semester' },
+  'Summer 1': { type: 'summer' },
+  'Summer 2': { type: 'summer' },
+  'All Campus': { type: 'summer' },
+  // Weekend routes — penalize Mon-Fri
+  'Weekend 1': { type: 'weekend' },
+  'Weekend 2': { type: 'weekend' },
+  'WKND1':     { type: 'weekend' },
+  'WKND2':     { type: 'weekend' },
+  // Overnight routes — penalize outside 3AM-6AM
+  'Overnight 1': { type: 'overnight' },
+  'Overnight 2': { type: 'overnight' },
+  'ON1':         { type: 'overnight' },
+  'ON2':         { type: 'overnight' },
 };
 
-// Returns true if routeName is an overnight-only route during current hour
-function isOvernightOnlyNow(routeName) {
+function getRoutePenalty(routeName) {
   const schedule = ROUTE_SCHEDULES[routeName];
-  if (!schedule || !schedule.overnight) return false;
-  const hourNow = new Date().getHours();
-  // Overnight window is 3-6AM; outside that, it shouldn't be suggested
-  return hourNow >= 6 || hourNow < 3;
+  if (!schedule) return 0;
+
+  const now = new Date();
+  const hour = now.getHours();
+  const day = now.getDay(); // 0=Sun, 6=Sat
+  const month = now.getMonth(); // 0=Jan, 11=Dec
+  const isSummer = month >= 5 && month <= 7; // June-August
+
+  if (schedule.type === 'overnight') {
+    return (hour >= 3 && hour < 6) ? 0 : 1000;
+  }
+  if (schedule.type === 'weekend') {
+    return (day === 0 || day === 6) ? 0 : 1000;
+  }
+  if (schedule.type === 'summer') {
+    // Slight preference for Summer-named routes during summer (tiebreaker)
+    return isSummer && routeName.toLowerCase().includes('summer') ? -1 : 0;
+  }
+  return 0;
 }
 
 // Finds routes that connect a stop near fromBuilding to a stop near toBuilding,
@@ -327,10 +356,7 @@ async function findRoutesBetweenStops(fromStopIds, toStopIds) {
         const rn = routeNames[routeId] || {};
         const routeName = rn.name || 'Unknown route';
 
-        // Heavily penalize overnight routes during daytime so they only win
-        // when no daytime route connects the two stops at all
-        const overnightPenalty = isOvernightOnlyNow(routeName) ? 1000 : 0;
-
+        const penalty = getRoutePenalty(routeName);
         matches.push({
           routeId,
           routeName,
@@ -338,7 +364,7 @@ async function findRoutesBetweenStops(fromStopIds, toStopIds) {
           fromStopId: fromId,
           toStopId: toId,
           stopsBetween,
-          score: stopsBetween + fromRank * 2 + toRank * 2 + overnightPenalty
+          score: stopsBetween + fromRank * 2 + toRank * 2 + penalty
         });
       });
     });

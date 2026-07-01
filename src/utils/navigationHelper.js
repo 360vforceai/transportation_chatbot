@@ -42,7 +42,15 @@ async function findBuilding(query) {
   };
 }
 
-// ─── Distance / time estimates ─────────────────────────────────────────────
+const DISTRICT_NAMES = {
+  'CAC': 'College Ave', 'BU': 'Busch',
+  'LIV': 'Livingston', 'CD': 'Cook/Douglass',
+  'NB': 'New Brunswick', 'RBHS': 'RBHS'
+};
+
+function campusLabel(building) {
+  return DISTRICT_NAMES[building.district] || building.campus || building.district;
+}
 
 function haversineMiles(lat1, lng1, lat2, lng2) {
   return passio.haversineMiles(lat1, lng1, lat2, lng2);
@@ -158,12 +166,22 @@ async function getBusOptions(fromBuilding, toBuilding) {
     liveTrackingNote = 'No buses currently tracked on this route — may be off-service hours. Estimate only.';
   }
 
+  function stopMatchesBuilding(stopName, buildingName) {
+    const cleanStop = stopName.replace(/\s*\(.*?\)\s*/g, '').trim().toLowerCase();
+    const cleanBuilding = buildingName.toLowerCase();
+    return cleanBuilding.includes(cleanStop) || cleanStop.includes(cleanBuilding);
+  }
+
   return {
     found: true,
     routeName: best.routeName,
     routeShortName: best.routeShortName,
-    boardStopName: boardStop.name === fromBuilding.name ? `${boardStop.name} (bus stop)` : boardStop.name,
-    alightStopName: alightStop.name === toBuilding.name ? `${alightStop.name} (bus stop)` : alightStop.name,
+    boardStopName: stopMatchesBuilding(boardStop.name, fromBuilding.name)
+      ? `${boardStop.name} (bus stop)`
+      : boardStop.name,
+    alightStopName: stopMatchesBuilding(alightStop.name, toBuilding.name)
+      ? `${alightStop.name} (bus stop)`
+      : alightStop.name,
     walkToStopMin,
     walkFromStopMin,
     waitMin,
@@ -189,7 +207,7 @@ async function getDirections(fromQuery, toQuery, mode) {
   }
 
   const directMiles = haversineMiles(fromBuilding.lat, fromBuilding.lng, toBuilding.lat, toBuilding.lng);
-  const sameCampus = fromBuilding.campus === toBuilding.campus;
+  const sameCampus = fromBuilding.district === toBuilding.district;
 
   // Use ORS for real road-following times; fall back to haversine estimates
   // if ORS_API_KEY isn't set or the request fails.
@@ -240,6 +258,7 @@ async function getDirections(fromQuery, toQuery, mode) {
 
 module.exports = {
   findBuilding,
+  campusLabel,
   haversineMiles,
   walkMinutes,
   driveMinutes,

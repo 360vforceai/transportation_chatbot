@@ -1,21 +1,31 @@
 const { isRateLimited, recordRequest, getRemainingSeconds } = require('../utils/rateLimiter');
 const { splitMessage } = require('../utils/messageUtils');
 const { getResponse, getRouterDecision } = require('../agents/aiClient');
-const { findBuilding, findNearestLots, findResidentLots, findFlexLots, checkPermitEligibility } = require('../utils/parkingHelper');
-const { setStationList, fetchNJTDepartures, formatNJTEmbed, refreshAliases } = require('../agents/njtransit_scraper');
+const { findNearestLots, checkPermitEligibility } = require('../utils/parkingHelper');
 const {
   getShortTermHistory,
   searchLongTermMemories,
   saveMemoryAsync
 } = require('../utils/memoryService');
 const {
+  // TODO: import data functions from transportationClient.js as they are built
+  // searchParking,
+  // formatParkingContext,
+  // formatAlertContext,
+  // fetchLiveBusLocations,
+  // fetchParkingAvailability,
+  searchNJTransit,
   formatNJTransitContext,
+  fetchLiveAlerts,
   getAlertsForRoadway,
   fetchPortAuthorityAlerts, 
   formatPortAuthorityEmbed,
   fetchACEAlerts, 
   formatACEEmbed,
-  searchAccessibility, 
+  searchBuildings,
+  formatBuildingContext,
+  searchBusRoutes,
+  formatBusContext,
 } = require('../agents/transportationClient');
 const navigationHelper = require('../utils/navigationHelper');
 const passioClient = require('../agents/passioClient');
@@ -23,15 +33,6 @@ const logger = require('../utils/logger');
 
 // Prevent Discord Gateway from replaying the same interaction, avoiding duplicate processing.
 const handledInteractions = new Map();
-
-const { createParkingEmbed } = require('../utils/embedFactory');
-
-const { createClient } = require('@supabase/supabase-js');
-
-const supabase = createClient(
-  process.env.SUPABASE_URL,
-  process.env.SUPABASE_KEY
-);
 
 // Periodically purge IDs older than 10 minutes (interaction tokens expire after 15 min).
 setInterval(() => {
@@ -288,8 +289,8 @@ async function handleNavigate(interaction, userId, username) {
     color: 0x5865F2,
     title: `🗺️ ${fromB.name} → ${toB.name}`,
     description: sameCampus
-      ? `Both on **${fromB.campus}** campus — ${distanceMiles.toFixed(2)} mi direct.`
-      : `**${fromB.campus}** → **${toB.campus}** — ${distanceMiles.toFixed(2)} mi direct.`,
+      ? `Both on **${navigationHelper.campusLabel(fromB)}** campus — ${distanceMiles.toFixed(2)} mi direct.`
+      : `**${navigationHelper.campusLabel(fromB)}** → **${navigationHelper.campusLabel(toB)}** — ${distanceMiles.toFixed(2)} mi direct.`,
     fields: [],
     footer: { text: 'Estimates only — always verify live conditions on Passio Go.' },
     timestamp: new Date().toISOString()
@@ -318,93 +319,53 @@ async function handleNavigate(interaction, userId, username) {
 // Options: destination (required), permit (optional — e.g. "A", "B", "C", "staff")
 
 async function handleParking(interaction, userId, username) {
-  const destination = interaction.options.getString('destination');
-  const permitType = interaction.options.getString('permit_type');
-  const homeCampus = interaction.options.getString('home_campus');
-  const time = interaction.options.getString('time') ||
-    new Date().toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit' });
+    const destination = interaction.options.getString('destination');
+    const permit = interaction.options.getString('permit');
+    const time = interaction.options.getString('time') ||
+      new Date().toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit' });
 
+    const { building, lots } = findNearestLots(destination);
 
-  const building = await findBuilding(destination);
-
-  if (!building) {
-    await interaction.editReply(
-      `🅿️ I couldn't find "${destination}" in my building list. Try searching by a specific hall or student center name.`
-    );
-    return;
-  }
-
-  // ── Dorm branch ───────────────────────────────────────────────────────────
-  if (building.is_dorm) {
-    if (!permitType) {
+    if (!building) {
       await interaction.editReply(
-        `🏠 **${building.name}** is a residence hall. Re-run \`/parking\` with your \`permit_type\` (Commuter or Resident) and \`home_campus\` to see your parking options.`
+        `🅿️ I couldn't find "${destination}" in my building list yet. Try a campus student center for now (e.g. "Busch Student Center").`
       );
       return;
     }
 
-    if (permitType === 'resident') {
-      const campus = homeCampus || building.campus;
-      const [homeLots, flexLots] = await Promise.all([
-        findResidentLots(building, campus),
-        findFlexLots(building)
-      ]);
+    const lines = lots.map((lot) => {
+      const { eligible, permitOk, timeOk } = checkPermitEligibility(lot, permit, time);
+      let status = '✅ Open to all';
+      if (permit) {
+        status = eligible ? '✅ Eligible' : !permitOk ? '❌ Permit not valid here' : '❌ Outside hours';
+      } else if (!timeOk) {
+        status = '⚠️ Outside posted hours';
+      }
+      return `**${lot.name}** (${lot.campus}) — ${lot.distanceMiles.toFixed(2)} mi, ~${lot.walkMinutes} min walk — ${status}`;
+    });
 
-      const lots = [
-        ...homeLots.map(l => ({ ...l, status: '✅ Your home lot (24/7)' })),
-        ...flexLots.map(l => ({ ...l, status: '✅ Eligible (resident flex, 5PM–12AM Mon–Fri)' }))
-      ];
+    const reply = [
+      `🅿️ Nearest lots to **${building.name}**:`,
+      '',
+      ...lines
+    ].join('\n');
 
-      logger.info('lots being passed to embed', lots.map(l => ({ name: l.name, status: l.status })));
+    await interaction.editReply(reply);
+    logger.info('Handled /parking', { userId, destination, permit, time });
+}
 
+// ── /transit ─────────────────────────────────────────────────────────────────
+// NJ Transit integration — train and bus schedules for commuters to/from Rutgers.
+// Data sources: njtransit (RAG), NJ Transit API (live if available)
+// Options: destination (required), time (optional — defaults to now)
+// TODO: query njtransit table for matching routes, optionally hit NJ Transit API
+//       for live departures from New Brunswick station. Return schedule embed.
 
-      const embed = createParkingEmbed(building, lots);
-      await interaction.editReply({ embeds: [embed] });
-      logger.info('Handled /parking (resident dorm)', { userId, destination, campus, time });
-      return;
-    }
-
-    if (permitType === 'commuter') {
-      const { lots: rawLots } = await findNearestLots(building);
-
-      const lots = await Promise.all(rawLots.map(async (lot) => {
-        const { eligible, matchedRule } = await checkPermitEligibility(lot, permitType, homeCampus, time);
-        const status = eligible && matchedRule === 'flex' ? '✅ Eligible (flex time)'
-          : eligible ? '✅ Eligible'
-          : '❌ Not available until 5pm';
-        return { ...lot, status };
-      }));
-
-      const embed = createParkingEmbed(building, lots);
-      await interaction.editReply({ embeds: [embed] });
-      logger.info('Handled /parking (commuter dorm)', { userId, destination, homeCampus, time });
-      return;
-    }
-  }
-
-  // ── Non-dorm branch ───────────────────────────────────────────────────────
-  const { lots: rawLots } = await findNearestLots(building);
-
-  if (!rawLots.length) {
-    await interaction.editReply(`🅿️ No lots found near **${building.name}**.`);
-    return;
-  }
-
-  const lots = await Promise.all(rawLots.map(async (lot) => {
-    const { eligible, matchedRule } = await checkPermitEligibility(lot, permitType, homeCampus, time);
-    let status = '✅ Open to all';
-    if (permitType) {
-      if (eligible && matchedRule === 'flex') status = '✅ Eligible (flex time)';
-      else if (eligible && matchedRule === 'residentFlex') status = '✅ Eligible (resident flex)';
-      else if (eligible) status = '✅ Eligible';
-      else status = '❌ Not available until 5pm';
-    }
-    return { ...lot, status };
-  }));
-
-  const embed = createParkingEmbed(building, lots);
-  await interaction.editReply({ embeds: [embed] });
-  logger.info('Handled /parking', { userId, destination, permitType, homeCampus, time });
+async function handleTransit(interaction, userId, username) {
+  // const destination = interaction.options.getString('destination');
+  // const time        = interaction.options.getString('time');
+  await interaction.editReply('🚆 `/transit` — NJ Transit schedules coming soon.');
+  logger.info('Handled /transit (stub)', { userId });
 }
 
 // ── /leavenow ────────────────────────────────────────────────────────────────
@@ -420,26 +381,6 @@ async function handleLeaveNow(interaction, userId, username) {
   // const from          = interaction.options.getString('from');
   await interaction.editReply('⏱️ `/leavenow` — Leave-now assistant coming soon.');
   logger.info('Handled /leavenow (stub)', { userId });
-}
-
-// ── /transit ──────────────────────────────────────────────────────────────
-// NJ Transit real-time departures via DepartureVision scraping
-// Options: station (required), limit (optional, default 8)
- 
-async function handleTransit(interaction, userId, username) {
-  const stationInput = interaction.options.getString('station');
-  const limit = interaction.options.getInteger('limit') || 8;
- 
-  const result = await fetchNJTDepartures(stationInput);
- 
-  const embed = formatNJTEmbed(result, limit);
-  await interaction.editReply({ embeds: [embed] });
- 
-  logger.info('Handled /transit', {
-    userId,
-    station: result.station,
-    departures: result.departures?.length ?? 0
-  });
 }
 
 // ── /compare ─────────────────────────────────────────────────────────────────
@@ -537,118 +478,18 @@ async function handleAlerts(interaction, userId, username) {
   logger.info('Handled /alerts', { userId, roadway, embedCount: toSend.length });
 }
 
-// ── /access ───────────────────────────────────────────────────────────────
-// Accessibility assistant — campus buses, parking, entrances, RADR, paratransit
-// Options: topic (required), campus (optional)
- 
+// ── /access ──────────────────────────────────────────────────────────────────
+// Accessibility assistant — accessible routes, entrances, and transportation options.
+// Data sources: buildings (RAG — accessible entrance data), bus_routes (RAG — accessible buses)
+// Options: destination (required), need (optional — e.g. "elevator", "ramp", "accessible bus")
+// TODO: query buildings for accessible entrance info and bus_routes for ADA-accessible
+//       vehicles. Return step-by-step accessible directions embed.
+
 async function handleAccess(interaction, userId, username) {
-  const topic = interaction.options.getString('topic');
-  const campus = interaction.options.getString('campus') || 'all';
-
-  logger.info('handleAccess started', { userId, topic, campus });
-
-  const searchQuery = campus !== 'all' ? `${topic} ${campus} campus` : topic;
-
-  let results = [];
-  try {
-    results = await searchAccessibility(searchQuery, campus);
-    logger.info('searchAccessibility returned', { count: results?.length || 0 });
-  } catch (err) {
-    logger.error('searchAccessibility failed:', err.message);
-    await interaction.editReply({ embeds: [fallbackEmbed(topic, campus)] });
-    return;
-  }
-
-  if (!results || results.length === 0) {
-    await interaction.editReply({ embeds: [fallbackEmbed(topic, campus)] });
-    return;
-  }
-
-  const topResults = results.slice(0, 3);
-  const context = topResults.map((r, i) =>
-    `[Source ${i+1}]: ${r.content}`
-  ).join('\n\n');
-
-  const systemPrompt = `You are a helpful Rutgers accessibility assistant. 
-Answer the user's question using ONLY the information provided in the context below. 
-If the context doesn't contain enough information, say so clearly and suggest contacting DOTS or RADR.
-Keep your answer concise, clear, and friendly.
-
-Context:
-${context}`;
-
-  const userMessage = `Question: ${topic}${campus !== 'all' ? ` (campus: ${campus})` : ''}`;
-
-  let content;
-  try {
-    const response = await getResponse([{ role: 'system', content: systemPrompt }, { role: 'user', content: userMessage }], {});
-    content = response.content;
-    logger.info('OpenAI response received', { contentLength: content?.length || 0 });
-  } catch (err) {
-    logger.error('OpenAI getResponse failed:', err.message);
-    // Fallback: show raw content embed
-    const rawFields = topResults.map(r => ({
-      name: r.topic || 'Info',
-      value: r.content.slice(0, 900) + (r.content.length > 900 ? '...' : ''),
-      inline: false
-    }));
-    await interaction.editReply({
-      embeds: [{
-        color: 0xCC0033,
-        title: `♿ Accessibility — ${topic}${campus !== 'all' ? ` (${campus})` : ''}`,
-        fields: rawFields,
-        footer: { text: 'Sources: RADR · DOTS · ODS' },
-        timestamp: new Date().toISOString()
-      }]
-    });
-    return;
-  }
-
-  // ✨ Build the embed for the successful answer
-  const embed = {
-    color: 0xCC0033,
-    title: `♿ Accessibility — ${topic}${campus !== 'all' ? ` (${campus})` : ''}`,
-    description: content,  // main answer
-    fields: [],
-    footer: { text: 'Source: RADR · DOTS · ODS | Always verify directly with the office' },
-    timestamp: new Date().toISOString()
-  };
-
-  // Optionally add source URLs as a field (if available)
-  const sources = topResults
-    .map(r => r.source_url)
-    .filter(Boolean)
-    .slice(0, 3);
-  if (sources.length > 0) {
-    embed.fields.push({
-      name: '📎 Sources',
-      value: sources.map((url, i) => `[Source ${i+1}](${url})`).join(' · '),
-      inline: false
-    });
-  }
-
-  // Check if the embed description exceeds the 6000 char limit
-  if (content.length > 6000) {
-    // Truncate and add a note
-    embed.description = content.slice(0, 5997) + '…\n\n*(Answer truncated due to length – ask a follow‑up for more details.)*';
-    // Send the embed even if truncated (it's still within limit)
-    await interaction.editReply({ embeds: [embed] });
-  } else {
-    await interaction.editReply({ embeds: [embed] });
-  }
-
-  logger.info('Handled /access (RAG + OpenAI embed)', { userId, topic, campus, results: results.length });
-}
-
-// Helper fallback embed
-function fallbackEmbed(topic, campus) {
-  return {
-    color: 0xCC0033,
-    title: '♿ Accessibility Info',
-    description: `I couldn't find specific accessibility information for **"${topic}"**${campus !== 'all' ? ` on the **${campus}** campus` : ''}.\n\nFor direct help:\n• **RADR:** radr.rutgers.edu\n• **DOTS:** ipo.rutgers.edu/dots | 848-932-7744\n• **Facilities (broken elevator etc):** 848-445-1234\n• **RUPD Non-Emergency:** 732-932-7211`,
-    footer: { text: 'Rutgers Access and Disability Resources · radr.rutgers.edu' },
-    timestamp: new Date().toISOString()
-  };
+  // const destination = interaction.options.getString('destination');
+  // const need        = interaction.options.getString('need');
+  await interaction.editReply('♿ `/access` — Accessibility assistant coming soon.');
+  logger.info('Handled /access (stub)', { userId });
 }
 
 // ── /ask ─────────────────────────────────────────────────────────────────────
@@ -751,45 +592,4 @@ async function handleInteraction(interaction) {
   }
 }
 
-async function handleAutocomplete(interaction) {
-  console.log("Autocomplete called!");
-
-  try {
-    // Only autocomplete for /parking
-    if (interaction.commandName !== "parking") {
-      return interaction.respond([]);
-    }
-
-    const focused = interaction.options.getFocused();
-
-    const { data, error } = await supabase
-      .from("app_rutgers_buildings")
-      .select("name, campus")
-      .or(
-        `name.ilike.${focused}%,name.ilike.%${focused}%`
-      )
-      .limit(25);
-
-    if (error) {
-      logger.error("Autocomplete failed:", error.message);
-      return interaction.respond([]);
-    }
-
-    await interaction.respond(
-      data.map((building) => ({
-        name: `${building.name} • ${building.campus.replace(
-          "Rutgers University - ",
-          ""
-        )}`,
-        value: building.name
-      }))
-    );
-  } catch (err) {
-    logger.error("Autocomplete exception:", err.message);
-    return interaction.respond([]);
-  }
-}
-
-module.exports = { handleInteraction,
-   handleAutocomplete
-};
+module.exports = { handleInteraction };
