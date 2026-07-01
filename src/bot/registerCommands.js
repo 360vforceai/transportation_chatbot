@@ -4,6 +4,47 @@ const logger = require('../utils/logger');
 
 const commands = [
   {
+    name: 'navigate',
+    description: 'Get directions between Rutgers buildings — walking, bus, or driving',
+    options: [
+      {
+        name: 'from',
+        type: 3,
+        description: 'Starting location (e.g. Busch Student Center)',
+        required: true
+      },
+      {
+        name: 'to',
+        type: 3,
+        description: 'Destination (e.g. Hill Center)',
+        required: true
+      },
+      {
+        name: 'mode',
+        type: 3,
+        description: 'Specific travel mode (defaults to comparing all three)',
+        required: false,
+        choices: [
+          { name: 'Walking', value: 'walking' },
+          { name: 'Bus', value: 'bus' },
+          { name: 'Driving', value: 'driving' }
+        ]
+      }
+    ]
+  },
+  {
+    name: 'bus',
+    description: 'See live Rutgers bus locations for a route',
+    options: [
+      {
+        name: 'route',
+        type: 3,
+        description: 'Route name or code (e.g. LX, EE, H) — omit to list active routes',
+        required: false
+      }
+    ]
+  },
+  {
     name: 'transit',
     description: 'Get real-time NJ Transit train departures from a station',
     options: [

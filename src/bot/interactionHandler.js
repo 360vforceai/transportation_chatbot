@@ -17,6 +17,8 @@ const {
   formatACEEmbed,
   searchAccessibility, 
 } = require('../agents/transportationClient');
+const navigationHelper = require('../utils/navigationHelper');
+const passioClient = require('../agents/passioClient');
 const logger = require('../utils/logger');
 
 // Prevent Discord Gateway from replaying the same interaction, avoiding duplicate processing.
@@ -72,15 +74,21 @@ async function runAdvisor(userId, username, question) {
   // TODO: replace Promise.resolve([]) with actual search calls as transportationClient.js is built
   const [
     { memories, embedding },
-    // busResults,
+    busResults,
+    buildingResults,
     // parkingResults,
-    // buildingResults,
     // alertResults,
     // njtransitResults,
   ] = await Promise.all([
     tables.includes('community_memory')
       ? searchLongTermMemories(keywords)
       : Promise.resolve({ memories: [], embedding: null }),
+
+    tables.includes('bus_routes')    ? searchBusRoutes(keywords)   : Promise.resolve([]),
+    tables.includes('buildings')     ? searchBuildings(keywords)   : Promise.resolve([]),
+    // tables.includes('parking')       ? searchParking(keywords)     : Promise.resolve([]),
+    // tables.includes('alerts')        ? searchAlerts(keywords)      : Promise.resolve([]),
+    // tables.includes('njtransit')     ? searchNJTransit(keywords)   : Promise.resolve([]),
   ]);
 
   const ragContext = memories.length > 0
@@ -90,9 +98,21 @@ async function runAdvisor(userId, username, question) {
       }).join('\n')
     : null;
 
+  // TODO: format contexts as transportationClient.js is built
+  const busContext = formatBusContext(busResults);
+  const buildingContext = formatBuildingContext(buildingResults);
+  // const parkingContext   = formatParkingContext(parkingResults);
+  // const alertContext     = formatAlertContext(alertResults);
+  // const njtransitContext = formatNJTransitContext(njtransitResults);
+
   const messages = [...shortTermHistory, { role: 'user', content: question }];
 
   const { content } = await getResponse(messages, {
+    busContext,
+    buildingContext,
+    // parkingContext,
+    // alertContext,
+    // njtransitContext,
     keywords
   });
 
@@ -107,9 +127,115 @@ async function runAdvisor(userId, username, question) {
 // TODO: call fetchLiveBusLocations(route) and format into an embed with stops + ETAs
 
 async function handleBus(interaction, userId, username) {
-  // const route = interaction.options.getString('route');
-  await interaction.editReply('🚌 `/bus` — Bus tracker coming soon.');
-  logger.info('Handled /bus (stub)', { userId });
+  const routeQuery = interaction.options.getString('route');
+
+  if (!routeQuery) {
+    const [allVehicles, routes] = await Promise.all([
+      passioClient.fetchVehicles(),
+      passioClient.fetchRoutes()
+    ]);
+    const vehicles = await passioClient.filterNBVehicles(allVehicles);
+    const activeRouteIds = new Set(vehicles.map((v) => String(v.routeId)));
+    const activeRoutes = routes.filter((r) => activeRouteIds.has(String(r.id)));
+
+    if (activeRoutes.length === 0) {
+      await interaction.editReply('🚌 No buses are currently active. Try again during normal service hours, or specify a route with `/bus route:`.');
+      return;
+    }
+    const lines = activeRoutes.map((r) => `• **${r.name}**`).sort();
+    await interaction.editReply([
+      `🚌 **Currently active routes** (${activeRoutes.length}):`,
+      ...lines,
+      '',
+      'Use `/bus route:<name>` to see live locations and arrivals for a route.'
+    ].join('\n'));
+    logger.info('Handled /bus (route list)', { userId, activeRouteCount: activeRoutes.length });
+    return;
+  }
+
+  const route = await passioClient.findRouteByQuery(routeQuery);
+  if (!route) {
+    // Tell the user what IS currently available
+    const routes = await passioClient.fetchRoutes();
+    const routeList = routes.map((r) => r.name).join(', ');
+    await interaction.editReply(
+      `🚌 No route matching "${routeQuery}" is currently running.\n\n` +
+      `**Currently configured routes:** ${routeList || 'none'}\n\n` +
+      `Semester routes (LX, EE, H, B, etc.) only run during the Fall and Spring semesters.`
+    );
+    return;
+  }
+
+  // Get live vehicles and stops for this route in parallel
+  const [vehicles, stops] = await Promise.all([
+    passioClient.getVehiclesForRoute(route.id),
+    passioClient.getStopsForRoute(route.id)
+  ]);
+
+  const stopNames = stops.slice(0, 6).map((s) => s.name).filter(Boolean);
+  const routeInfo = [
+    `**Route:** ${route.name}`,
+    stopNames.length ? `**Stops:** ${stopNames.join(' → ')}${stops.length > 6 ? ` (+${stops.length - 6} more)` : ''}` : null,
+    route.serviceTime ? `**Service:** ${route.serviceTime}` : null,
+  ].filter(Boolean).join('\n');
+
+  if (vehicles.length === 0) {
+    await interaction.editReply([
+      `🚌 **${route.name}**`,
+      '',
+      routeInfo,
+      '',
+      '⚠️ No buses are currently being tracked on this route. It may be outside service hours.'
+    ].join('\n'));
+    logger.info('Handled /bus (no active vehicles)', { userId, routeId: route.id });
+    return;
+  }
+
+  // For each vehicle, find nearest stop and attempt ETA
+  const nearestStopLookups = await Promise.all(
+    vehicles.map((v) => passioClient.findNearestStops(v.latitude, v.longitude, 1))
+  );
+
+  // Try ETA endpoint for the first few stops on the route
+  const firstStopIds = stops.slice(0, 5).map((s) => s.stopId || s.id).filter(Boolean);
+  const etaData = firstStopIds.length
+    ? await passioClient.fetchEta(route.id, firstStopIds)
+    : null;
+
+  // Build ETA map: stopId -> minutes
+  const etaMap = {};
+  if (etaData) {
+    try {
+      const etaList = Array.isArray(etaData) ? etaData : Object.values(etaData);
+      for (const entry of etaList) {
+        if (entry.stopId && entry.seconds != null) {
+          etaMap[String(entry.stopId)] = Math.round(entry.seconds / 60);
+        }
+      }
+    } catch (_) {}
+  }
+
+  const vehicleLines = vehicles.map((v, i) => {
+    const nearStop = nearestStopLookups[i][0];
+    const speedText = v.speed != null ? `${Math.round(v.speed)} mph` : null;
+    const nearText = nearStop ? `near **${nearStop.name}**` : 'location updating';
+    const etaMin = nearStop ? etaMap[String(nearStop.id)] : null;
+    const etaText = etaMin != null ? ` — arriving in ~${etaMin} min` : (speedText ? ` — ${speedText}` : '');
+    return `🚍 **Bus ${v.name || v.id}** — ${nearText}${etaText}`;
+  });
+
+  const reply = [
+    `🚌 **${route.name}** (${vehicles.length} bus${vehicles.length > 1 ? 'es' : ''} active)`,
+    '',
+    routeInfo,
+    '',
+    ...vehicleLines,
+    '',
+    `🗺️ Live map: https://rutgers.passiogo.com/?route=${route.id}`
+  ].join('\n');
+
+  await interaction.editReply(reply);
+  logger.info('Handled /bus', { userId, routeId: route.id, activeVehicles: vehicles.length, hasEta: Object.keys(etaMap).length > 0 });
 }
 
 // ── /navigate ────────────────────────────────────────────────────────────────
@@ -119,12 +245,71 @@ async function handleBus(interaction, userId, username) {
 // TODO: query buildings for both locations, then find connecting bus routes,
 //       and compute estimated travel time. Return step-by-step directions embed.
 
+const MODE_EMOJI = { walking: '🚶', bus: '🚌', driving: '🚗' };
+
+function formatBusField(bus) {
+  if (!bus || !bus.found) {
+    return {
+      name: `${MODE_EMOJI.bus} Bus`,
+      value: bus?.reason || 'No bus option available for this trip.',
+      inline: false
+    };
+  }
+  return {
+    name: `${MODE_EMOJI.bus} Bus — ~${bus.totalMin} min (Route ${bus.routeShortName})`,
+    value: [
+      `Walk ${bus.walkToStopMin} min to **${bus.boardStopName}**`,
+      `Wait ~${bus.waitMin} min, ride ~${bus.rideMin} min to **${bus.alightStopName}**`,
+      `Walk ${bus.walkFromStopMin} min to destination`,
+      `_${bus.liveTrackingNote}_`
+    ].join('\n'),
+    inline: false
+  };
+}
+
 async function handleNavigate(interaction, userId, username) {
-  // const from = interaction.options.getString('from');
-  // const to   = interaction.options.getString('to');
-  // const mode = interaction.options.getString('mode') || 'bus';
-  await interaction.editReply('🗺️ `/navigate` — Campus navigation coming soon.');
-  logger.info('Handled /navigate (stub)', { userId });
+  const from = interaction.options.getString('from');
+  const to = interaction.options.getString('to');
+  const mode = interaction.options.getString('mode'); // 'walking' | 'bus' | 'driving' | null
+
+  const directions = await navigationHelper.getDirections(from, to, mode);
+
+  if (directions.error) {
+    await interaction.editReply(
+      `🗺️ I couldn't find "${directions.missing}" in my building list yet. Try a campus student center or a major building (e.g. "Busch Student Center", "Hill Center", "College Ave Student Center").`
+    );
+    logger.info('Handled /navigate (building not found)', { userId, from, to, missing: directions.missing });
+    return;
+  }
+
+  const { from: fromB, to: toB, distanceMiles, sameCampus, walking, driving, bus } = directions;
+
+  const embed = {
+    color: 0x5865F2,
+    title: `🗺️ ${fromB.name} → ${toB.name}`,
+    description: sameCampus
+      ? `Both on **${fromB.campus}** campus — ${distanceMiles.toFixed(2)} mi direct.`
+      : `**${fromB.campus}** → **${toB.campus}** — ${distanceMiles.toFixed(2)} mi direct.`,
+    fields: [],
+    footer: { text: 'Estimates only — always verify live conditions on Passio Go.' },
+    timestamp: new Date().toISOString()
+  };
+
+  if (mode === 'walking') {
+    embed.fields.push({ name: `${MODE_EMOJI.walking} Walking`, value: `~${walking.minutes} min`, inline: false });
+  } else if (mode === 'driving') {
+    embed.fields.push({ name: `${MODE_EMOJI.driving} Driving`, value: `~${driving.minutes} min (plus parking — try \`/parking\`)`, inline: false });
+  } else if (mode === 'bus') {
+    embed.fields.push(formatBusField(bus));
+  } else {
+    // No mode specified — show a comparison of all three.
+    embed.fields.push({ name: `${MODE_EMOJI.walking} Walking`, value: `~${walking.minutes} min`, inline: true });
+    embed.fields.push({ name: `${MODE_EMOJI.driving} Driving`, value: `~${driving.minutes} min`, inline: true });
+    embed.fields.push(formatBusField(bus));
+  }
+
+  await interaction.editReply({ embeds: [embed] });
+  logger.info('Handled /navigate', { userId, from, to, mode: mode || 'all', busFound: !!bus?.found });
 }
 
 // ── /parking ─────────────────────────────────────────────────────────────────
