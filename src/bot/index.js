@@ -30,3 +30,7 @@ client.login(token).catch((err) => {
   logger.error('Login failed:', err.message);
   process.exit(1);
 });
+
+client.on('error', (err) => {
+  logger.error('Discord client error:', err.message);
+});

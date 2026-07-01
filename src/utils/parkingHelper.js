@@ -45,7 +45,10 @@ function ruleAppliesToday(rule, day) {
 
 function ruleTimeOk(rule, time) {
   if (!time) return true;
-  return time >= rule.start_time && time <= rule.end_time;
+  // trim DB time to HH:MM to match bot format
+  const start = rule.start_time.slice(0, 5);
+  const end = rule.end_time.slice(0, 5);
+  return time >= start && time <= end;
 }
 
 async function findBuilding(destination) {

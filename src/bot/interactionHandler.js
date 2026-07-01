@@ -2,6 +2,7 @@ const { isRateLimited, recordRequest, getRemainingSeconds } = require('../utils/
 const { splitMessage } = require('../utils/messageUtils');
 const { getResponse, getRouterDecision } = require('../agents/aiClient');
 const { findBuilding, findNearestLots, findResidentLots, findFlexLots, checkPermitEligibility } = require('../utils/parkingHelper');
+const { parseTime, resolveOrigin, getTravelTimes, subtractMinutes, formatTime12h } = require('../utils/googleMapsClient');
 const {
   getShortTermHistory,
   searchLongTermMemories,
@@ -263,11 +264,76 @@ async function handleTransit(interaction, userId, username) {
 }
 
 async function handleLeaveNow(interaction, userId, username) {
-  // const destination   = interaction.options.getString('destination');
-  // const arrivalTime   = interaction.options.getString('arrival_time');
-  // const from          = interaction.options.getString('from');
-  await interaction.editReply('⏱️ `/leavenow` — Leave-now assistant coming soon.');
-  logger.info('Handled /leavenow (stub)', { userId });
+  const destination = interaction.options.getString('destination');
+  const arrivalTimeRaw = interaction.options.getString('arrival_time');
+  const from = interaction.options.getString('from');
+  const homeCampus = interaction.options.getString('home_campus');
+
+  // parse arrival time
+  const arrivalTime = parseTime(arrivalTimeRaw);
+  if (!arrivalTime) {
+    await interaction.editReply(
+      `⏱️ Couldn't parse "${arrivalTimeRaw}" as a time. Try formats like \`9:00am\`, \`14:30\`, or \`2:30pm\`.`
+    );
+    return;
+  }
+
+  // resolve origin
+  const origin = await resolveOrigin(from, homeCampus);
+  if (!origin) {
+    await interaction.editReply(
+      `⏱️ Please provide a \`from\` address or select a \`home_campus\` so I know where you're starting from.`
+    );
+    return;
+  }
+
+  // find destination building
+  const building = await findBuilding(destination);
+  if (!building) {
+    await interaction.editReply(
+      `⏱️ I couldn't find "${destination}" in my building list. Try a specific hall or student center name.`
+    );
+    return;
+  }
+
+  // get travel times
+  const { walking, driving } = await getTravelTimes(
+    origin.lat, origin.lng,
+    building.latitude, building.longitude
+  );
+
+  if (!walking && !driving) {
+    await interaction.editReply(`⏱️ Couldn't fetch travel times right now. Please try again.`);
+    return;
+  }
+
+  // current time as HH:MM
+  const now = new Date().toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit' });
+
+  // build response lines
+  const lines = [`⏱️ **Leave-Now for ${building.name} by ${formatTime12h(arrivalTime)}**`, ''];
+
+  if (driving !== null) {
+    const leaveBy = subtractMinutes(arrivalTime, driving);
+    // const buffer = (arrivalTime.replace(':', '') > now.replace(':', ''))
+      // ? Math.max(0, (parseInt(arrivalTime) - parseInt(now)) - driving)
+      // : 0;
+    const leaveByFormatted = formatTime12h(leaveBy);
+    const late = leaveBy < now;
+    lines.push(`🚗 **Driving** — ${driving} min → Leave by **${leaveByFormatted}**${late ? ' ⚠️ Already late!' : ''}`);
+  }
+
+  if (walking !== null) {
+    const leaveBy = subtractMinutes(arrivalTime, walking);
+    const leaveByFormatted = formatTime12h(leaveBy);
+    const late = leaveBy < now;
+    lines.push(`🚶 **Walking** — ${walking} min → Leave by **${leaveByFormatted}**${late ? ' ⚠️ Already late!' : ''}`);
+  }
+
+  lines.push('', `📍 From: ${origin.label}`);
+
+  await interaction.editReply(lines.join('\n'));
+  logger.info('Handled /leavenow', { userId, destination, arrivalTime, from, homeCampus });
 }
 
 // ── /compare ─────────────────────────────────────────────────────────────────
@@ -480,23 +546,25 @@ async function handleInteraction(interaction) {
 }
 
 async function handleAutocomplete(interaction) {
-  console.log("Autocomplete called!");
-
   try {
-    // Only autocomplete for /parking
-    if (interaction.commandName !== "parking") {
+    if (!['parking', 'leavenow'].includes(interaction.commandName)) {
       return interaction.respond([]);
     }
 
     const focused = interaction.options.getFocused();
 
-    const { data, error } = await supabase
+    let query = supabase
       .from("app_rutgers_buildings")
       .select("name, campus")
-      .or(
-        `name.ilike.${focused}%,name.ilike.%${focused}%`
-      )
       .limit(25);
+
+    if (focused) {
+      query = query.or(`name.ilike.${focused}%,name.ilike.%${focused}%`);
+    } else {
+      query = query.order('name', { ascending: true });
+    }
+
+    const { data, error } = await query;
 
     if (error) {
       logger.error("Autocomplete failed:", error.message);
@@ -505,16 +573,13 @@ async function handleAutocomplete(interaction) {
 
     await interaction.respond(
       data.map((building) => ({
-        name: `${building.name} • ${building.campus.replace(
-          "Rutgers University - ",
-          ""
-        )}`,
+        name: `${building.name} • ${building.campus.replace("Rutgers University - ", "")}`,
         value: building.name
       }))
     );
   } catch (err) {
     logger.error("Autocomplete exception:", err.message);
-    return interaction.respond([]);
+    try { interaction.respond([]); } catch (_) {}
   }
 }
 
