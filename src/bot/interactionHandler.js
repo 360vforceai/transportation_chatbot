@@ -2,31 +2,19 @@ const { isRateLimited, recordRequest, getRemainingSeconds } = require('../utils/
 const { splitMessage } = require('../utils/messageUtils');
 const { getResponse, getRouterDecision } = require('../agents/aiClient');
 const { findBuilding, findNearestLots, findResidentLots, findFlexLots, checkPermitEligibility } = require('../utils/parkingHelper');
-const { parseTime, resolveOrigin, getTravelTimes, subtractMinutes, formatTime12h } = require('../utils/googleMapsClient');
 const {
   getShortTermHistory,
   searchLongTermMemories,
   saveMemoryAsync
 } = require('../utils/memoryService');
 const {
-  // TODO: import data functions from transportationClient.js as they are built
-  // searchBusRoutes,
-  // formatBusContext,
-  // searchParking,
-  // formatParkingContext,
-  // searchBuildings,
-  // formatBuildingContext,
-  // formatAlertContext,
-  // fetchLiveBusLocations,
-  // fetchParkingAvailability,
-  //searchNJTransit,
   formatNJTransitContext,
- // fetchLiveAlerts,
   getAlertsForRoadway,
   fetchPortAuthorityAlerts, 
   formatPortAuthorityEmbed,
   fetchACEAlerts, 
   formatACEEmbed,
+  searchAccessibility, 
 } = require('../agents/transportationClient');
 const logger = require('../utils/logger');
 
@@ -92,12 +80,6 @@ async function runAdvisor(userId, username, question) {
     tables.includes('community_memory')
       ? searchLongTermMemories(keywords)
       : Promise.resolve({ memories: [], embedding: null }),
-
-    // tables.includes('bus_routes')    ? searchBusRoutes(keywords)   : Promise.resolve([]),
-    // tables.includes('parking')       ? searchParking(keywords)     : Promise.resolve([]),
-    // tables.includes('buildings')     ? searchBuildings(keywords)   : Promise.resolve([]),
-    // tables.includes('alerts')        ? searchAlerts(keywords)      : Promise.resolve([]),
-    // tables.includes('njtransit')     ? searchNJTransit(keywords)   : Promise.resolve([]),
   ]);
 
   const ragContext = memories.length > 0
@@ -107,21 +89,9 @@ async function runAdvisor(userId, username, question) {
       }).join('\n')
     : null;
 
-  // TODO: format contexts as transportationClient.js is built
-  // const busContext       = formatBusContext(busResults);
-  // const parkingContext   = formatParkingContext(parkingResults);
-  // const buildingContext  = formatBuildingContext(buildingResults);
-  // const alertContext     = formatAlertContext(alertResults);
-  // const njtransitContext = formatNJTransitContext(njtransitResults);
-
   const messages = [...shortTermHistory, { role: 'user', content: question }];
 
   const { content } = await getResponse(messages, {
-    // busContext,
-    // parkingContext,
-    // buildingContext,
-    // alertContext,
-    // njtransitContext,
     keywords
   });
 
@@ -258,11 +228,6 @@ async function handleParking(interaction, userId, username) {
 // TODO: calculate travel time from bus routes + walking, subtract from arrival_time,
 //       check alerts for delays, return recommended departure time embed.
 
-async function handleTransit(interaction, userId, username) {
-  await interaction.editReply('🚆 `/transit` — NJ Transit schedules coming soon.');
-  logger.info('Handled /transit (stub)', { userId });
-}
-
 async function handleLeaveNow(interaction, userId, username) {
   const destination = interaction.options.getString('destination');
   const arrivalTimeRaw = interaction.options.getString('arrival_time');
@@ -334,6 +299,26 @@ async function handleLeaveNow(interaction, userId, username) {
 
   await interaction.editReply(lines.join('\n'));
   logger.info('Handled /leavenow', { userId, destination, arrivalTime, from, homeCampus });
+}
+
+// ── /transit ──────────────────────────────────────────────────────────────
+// NJ Transit real-time departures via DepartureVision scraping
+// Options: station (required), limit (optional, default 8)
+ 
+async function handleTransit(interaction, userId, username) {
+  const stationInput = interaction.options.getString('station');
+  const limit = interaction.options.getInteger('limit') || 8;
+ 
+  const result = await fetchNJTDepartures(stationInput);
+ 
+  const embed = formatNJTEmbed(result, limit);
+  await interaction.editReply({ embeds: [embed] });
+ 
+  logger.info('Handled /transit', {
+    userId,
+    station: result.station,
+    departures: result.departures?.length ?? 0
+  });
 }
 
 // ── /compare ─────────────────────────────────────────────────────────────────
@@ -431,18 +416,118 @@ async function handleAlerts(interaction, userId, username) {
   logger.info('Handled /alerts', { userId, roadway, embedCount: toSend.length });
 }
 
-// ── /access ──────────────────────────────────────────────────────────────────
-// Accessibility assistant — accessible routes, entrances, and transportation options.
-// Data sources: buildings (RAG — accessible entrance data), bus_routes (RAG — accessible buses)
-// Options: destination (required), need (optional — e.g. "elevator", "ramp", "accessible bus")
-// TODO: query buildings for accessible entrance info and bus_routes for ADA-accessible
-//       vehicles. Return step-by-step accessible directions embed.
-
+// ── /access ───────────────────────────────────────────────────────────────
+// Accessibility assistant — campus buses, parking, entrances, RADR, paratransit
+// Options: topic (required), campus (optional)
+ 
 async function handleAccess(interaction, userId, username) {
-  // const destination = interaction.options.getString('destination');
-  // const need        = interaction.options.getString('need');
-  await interaction.editReply('♿ `/access` — Accessibility assistant coming soon.');
-  logger.info('Handled /access (stub)', { userId });
+  const topic = interaction.options.getString('topic');
+  const campus = interaction.options.getString('campus') || 'all';
+
+  logger.info('handleAccess started', { userId, topic, campus });
+
+  const searchQuery = campus !== 'all' ? `${topic} ${campus} campus` : topic;
+
+  let results = [];
+  try {
+    results = await searchAccessibility(searchQuery, campus);
+    logger.info('searchAccessibility returned', { count: results?.length || 0 });
+  } catch (err) {
+    logger.error('searchAccessibility failed:', err.message);
+    await interaction.editReply({ embeds: [fallbackEmbed(topic, campus)] });
+    return;
+  }
+
+  if (!results || results.length === 0) {
+    await interaction.editReply({ embeds: [fallbackEmbed(topic, campus)] });
+    return;
+  }
+
+  const topResults = results.slice(0, 3);
+  const context = topResults.map((r, i) =>
+    `[Source ${i+1}]: ${r.content}`
+  ).join('\n\n');
+
+  const systemPrompt = `You are a helpful Rutgers accessibility assistant. 
+Answer the user's question using ONLY the information provided in the context below. 
+If the context doesn't contain enough information, say so clearly and suggest contacting DOTS or RADR.
+Keep your answer concise, clear, and friendly.
+
+Context:
+${context}`;
+
+  const userMessage = `Question: ${topic}${campus !== 'all' ? ` (campus: ${campus})` : ''}`;
+
+  let content;
+  try {
+    const response = await getResponse([{ role: 'system', content: systemPrompt }, { role: 'user', content: userMessage }], {});
+    content = response.content;
+    logger.info('OpenAI response received', { contentLength: content?.length || 0 });
+  } catch (err) {
+    logger.error('OpenAI getResponse failed:', err.message);
+    // Fallback: show raw content embed
+    const rawFields = topResults.map(r => ({
+      name: r.topic || 'Info',
+      value: r.content.slice(0, 900) + (r.content.length > 900 ? '...' : ''),
+      inline: false
+    }));
+    await interaction.editReply({
+      embeds: [{
+        color: 0xCC0033,
+        title: `♿ Accessibility — ${topic}${campus !== 'all' ? ` (${campus})` : ''}`,
+        fields: rawFields,
+        footer: { text: 'Sources: RADR · DOTS · ODS' },
+        timestamp: new Date().toISOString()
+      }]
+    });
+    return;
+  }
+
+  // ✨ Build the embed for the successful answer
+  const embed = {
+    color: 0xCC0033,
+    title: `♿ Accessibility — ${topic}${campus !== 'all' ? ` (${campus})` : ''}`,
+    description: content,  // main answer
+    fields: [],
+    footer: { text: 'Source: RADR · DOTS · ODS | Always verify directly with the office' },
+    timestamp: new Date().toISOString()
+  };
+
+  // Optionally add source URLs as a field (if available)
+  const sources = topResults
+    .map(r => r.source_url)
+    .filter(Boolean)
+    .slice(0, 3);
+  if (sources.length > 0) {
+    embed.fields.push({
+      name: '📎 Sources',
+      value: sources.map((url, i) => `[Source ${i+1}](${url})`).join(' · '),
+      inline: false
+    });
+  }
+
+  // Check if the embed description exceeds the 6000 char limit
+  if (content.length > 6000) {
+    // Truncate and add a note
+    embed.description = content.slice(0, 5997) + '…\n\n*(Answer truncated due to length – ask a follow‑up for more details.)*';
+    // Send the embed even if truncated (it's still within limit)
+    await interaction.editReply({ embeds: [embed] });
+  } else {
+    await interaction.editReply({ embeds: [embed] });
+  }
+
+  logger.info('Handled /access (RAG + OpenAI embed)', { userId, topic, campus, results: results.length });
+}
+
+// Helper fallback embed
+function fallbackEmbed(topic, campus) {
+  return {
+    color: 0xCC0033,
+    title: '♿ Accessibility Info',
+    description: `I couldn't find specific accessibility information for **"${topic}"**${campus !== 'all' ? ` on the **${campus}** campus` : ''}.\n\nFor direct help:\n• **RADR:** radr.rutgers.edu\n• **DOTS:** ipo.rutgers.edu/dots | 848-932-7744\n• **Facilities (broken elevator etc):** 848-445-1234\n• **RUPD Non-Emergency:** 732-932-7211`,
+    footer: { text: 'Rutgers Access and Disability Resources · radr.rutgers.edu' },
+    timestamp: new Date().toISOString()
+  };
 }
 
 // ── /ask ─────────────────────────────────────────────────────────────────────
