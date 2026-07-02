@@ -419,15 +419,23 @@ async function fetchAllAlerts() {
 // ACCESSIBILITY
 // ═══════════════════════════════════════════════════════════════════════════
 
-async function searchAccessibility(keywords) {
+async function searchAccessibility(query, campus = null) {
   try {
-    const embedding = await getEmbedding(keywords);
+    // 1. Embed the query
+    const embedding = await getEmbedding(query);
+
+    // 2. Call the vector search function
     const { data, error } = await getSupabase().rpc('match_accessibility', {
       query_embedding: embedding,
-      match_threshold: RAG_THRESHOLD,
-      match_count: RAG_COUNT
+      match_threshold: 0.4,      // was 0.7 – much more permissive
+      match_count: 10            // was 5 – get more candidates
     });
     if (error) throw error;
+
+    // 3. Optional campus filter (keep 'all' records too)
+    if (campus && campus !== 'all') {
+      return data.filter(r => r.campus === campus || r.campus === 'all');
+    }
     return data || [];
   } catch (err) {
     logger.error('searchAccessibility failed:', err.message);
