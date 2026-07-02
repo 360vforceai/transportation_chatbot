@@ -71,6 +71,59 @@ async function fetchLiveNJTransit(stationOrStop) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// BUILDINGS — RAG over app_rutgers_buildings (powers /ask location questions)
+// ═══════════════════════════════════════════════════════════════════════════
+
+async function searchBuildings(keywords) {
+  try {
+    const embedding = await getEmbedding(keywords);
+    const { data, error } = await getSupabase().rpc('match_app_rutgers_buildings', {
+      query_embedding: embedding,
+      match_threshold: RAG_THRESHOLD,
+      match_count: RAG_COUNT
+    });
+    if (error) throw error;
+    return data || [];
+  } catch (err) {
+    logger.error('searchBuildings failed:', err.message);
+    return [];
+  }
+}
+
+function formatBuildingContext(results) {
+  if (!results || results.length === 0) return null;
+  return results.map((r) => {
+    const addr = r.address ? ` (${r.address})` : '';
+    return `${r.name}${addr} — ${r.campus} campus, ${r.category || 'building'}`;
+  }).join('\n');
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// BUS ROUTES — RAG over bus_routes table (powers /ask schedule questions)
+// ═══════════════════════════════════════════════════════════════════════════
+
+async function searchBusRoutes(keywords) {
+  try {
+    const embedding = await getEmbedding(keywords);
+    const { data, error } = await getSupabase().rpc('match_bus_routes', {
+      query_embedding: embedding,
+      match_threshold: RAG_THRESHOLD,
+      match_count: RAG_COUNT
+    });
+    if (error) throw error;
+    return data || [];
+  } catch (err) {
+    logger.error('searchBusRoutes failed:', err.message);
+    return [];
+  }
+}
+
+function formatBusContext(results) {
+  if (!results || results.length === 0) return null;
+  return results.map((r) => r.content).join('\n\n');
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // NJTA TRAFFIC ALERTS — NJ Turnpike + Garden State Parkway
 // Source: https://www.njta.gov/wp-json/njta/v1/alerts (public JSON API)
 // ═══════════════════════════════════════════════════════════════════════════
@@ -366,23 +419,15 @@ async function fetchAllAlerts() {
 // ACCESSIBILITY
 // ═══════════════════════════════════════════════════════════════════════════
 
-async function searchAccessibility(query, campus = null) {
+async function searchAccessibility(keywords) {
   try {
-    // 1. Embed the query
-    const embedding = await getEmbedding(query);
-
-    // 2. Call the vector search function
+    const embedding = await getEmbedding(keywords);
     const { data, error } = await getSupabase().rpc('match_accessibility', {
       query_embedding: embedding,
-      match_threshold: 0.4,      // was 0.7 – much more permissive
-      match_count: 10            // was 5 – get more candidates
+      match_threshold: RAG_THRESHOLD,
+      match_count: RAG_COUNT
     });
     if (error) throw error;
-
-    // 3. Optional campus filter (keep 'all' records too)
-    if (campus && campus !== 'all') {
-      return data.filter(r => r.campus === campus || r.campus === 'all');
-    }
     return data || [];
   } catch (err) {
     logger.error('searchAccessibility failed:', err.message);
@@ -429,4 +474,8 @@ module.exports = {
   searchAccessibility,
   formatAccessibilityContext,
   getAccessibilityInfo,
+  searchBuildings,
+  formatBuildingContext,
+  searchBusRoutes,
+  formatBusContext,
 };

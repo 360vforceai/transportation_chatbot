@@ -1,0 +1,34 @@
+{
+  "_note": "Approximate coordinates for Rutgers New Brunswick locations, used for haversine distance/walk-time estimates and matching to nearest Passio Go bus stops. Good enough for routing estimates; refine with surveyed coordinates if precision becomes an issue.",
+  "buildings": [
+    { "name": "Hill Center", "campus": "Busch", "lat": 40.5226, "lng": -74.4602 },
+    { "name": "Busch Student Center", "campus": "Busch", "lat": 40.5236, "lng": -74.4607 },
+    { "name": "Rutgers Athletic Center", "campus": "Busch", "lat": 40.5217, "lng": -74.4595, "aliases": ["RAC"] },
+    { "name": "Werblin Recreation Center", "campus": "Busch", "lat": 40.5233, "lng": -74.4639, "aliases": ["Werblin"] },
+    { "name": "Allison Road Classrooms", "campus": "Busch", "lat": 40.5241, "lng": -74.4631, "aliases": ["ARC"] },
+    { "name": "Life Sciences Building", "campus": "Busch", "lat": 40.5219, "lng": -74.4569 },
+    { "name": "Engineering Building", "campus": "Busch", "lat": 40.5213, "lng": -74.4614 },
+    { "name": "Science and Engineering Resource Center", "campus": "Busch", "lat": 40.5204, "lng": -74.4624, "aliases": ["SERC"] },
+    { "name": "Busch Dining Hall", "campus": "Busch", "lat": 40.5232, "lng": -74.4612 },
+
+    { "name": "Livingston Student Center", "campus": "Livingston", "lat": 40.5235, "lng": -74.4392 },
+    { "name": "Livingston Recreation Center", "campus": "Livingston", "lat": 40.5246, "lng": -74.4384 },
+    { "name": "Tillett Hall", "campus": "Livingston", "lat": 40.5239, "lng": -74.4401 },
+    { "name": "Rutgers Business School", "campus": "Livingston", "lat": 40.5222, "lng": -74.4408, "aliases": ["RBS"] },
+    { "name": "Livingston Dining Commons", "campus": "Livingston", "lat": 40.5230, "lng": -74.4395 },
+
+    { "name": "College Ave Student Center", "campus": "College Ave", "lat": 40.5008, "lng": -74.4474 },
+    { "name": "Alexander Library", "campus": "College Ave", "lat": 40.5013, "lng": -74.4467 },
+    { "name": "Voorhees Mall", "campus": "College Ave", "lat": 40.5016, "lng": -74.4459 },
+    { "name": "Brower Commons", "campus": "College Ave", "lat": 40.4999, "lng": -74.4477 },
+    { "name": "College Ave Gym", "campus": "College Ave", "lat": 40.5006, "lng": -74.4490 },
+    { "name": "Rutgers Academic Building", "campus": "College Ave", "lat": 40.4992, "lng": -74.4452, "aliases": ["RAB"] },
+
+    { "name": "Cook/Douglass Student Center", "campus": "Cook/Douglass", "lat": 40.4789, "lng": -74.4339 },
+    { "name": "Douglass Library", "campus": "Cook/Douglass", "lat": 40.4799, "lng": -74.4325 },
+    { "name": "Cook Campus Center", "campus": "Cook/Douglass", "lat": 40.4776, "lng": -74.4366 },
+    { "name": "Cook Dining Hall", "campus": "Cook/Douglass", "lat": 40.4793, "lng": -74.4344 },
+
+    { "name": "New Brunswick Train Station", "campus": "Downtown", "lat": 40.4862, "lng": -74.4459, "aliases": ["NB Train Station", "NJ Transit Station"] }
+  ]
+}
