@@ -57,6 +57,8 @@ async function resolveOrigin(from, homeCampus) {
   return null;
 }
 
+
+
 // call Distance Matrix API for walking + driving
 async function getTravelTimes(originLat, originLng, destLat, destLng) {
   const origin = `${originLat},${originLng}`;

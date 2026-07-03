@@ -4,6 +4,13 @@ const { getResponse, getRouterDecision } = require('../agents/aiClient');
 const { findBuilding, findNearestLots, findResidentLots, findFlexLots, checkPermitEligibility } = require('../utils/parkingHelper');
 const { setStationList, fetchNJTDepartures, formatNJTEmbed, refreshAliases } = require('../agents/njtransit_scraper');
 const {
+  parseTime,
+  resolveOrigin,
+  getTravelTimes,
+  subtractMinutes,
+  formatTime12h,
+} = require('../utils/googleMapsClient');
+const {
   getShortTermHistory,
   searchLongTermMemories,
   saveMemoryAsync
@@ -27,6 +34,9 @@ const {
 const navigationHelper = require('../utils/navigationHelper');
 const passioClient = require('../agents/passioClient');
 const logger = require('../utils/logger');
+
+const { createClient } = require('@supabase/supabase-js');
+const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
 
 // Prevent Discord Gateway from replaying the same interaction, avoiding duplicate processing.
 const handledInteractions = new Map();
@@ -57,6 +67,31 @@ async function sendChunks(interaction, content) {
       .followUp({ content: chunks[i] })
       .catch((err) => logger.error('Follow-up failed:', err.message));
   }
+}
+//location finder
+
+async function resolveLocation(input) {
+  // Try Rutgers building match first
+  const building = await findBuilding(input);
+  if (building) {
+    return {
+      name: building.name,
+      latitude: building.latitude,
+      longitude: building.longitude,
+    };
+  }
+
+  // Fall back to geocoding for towns/addresses outside Rutgers
+  const geocoded = await resolveOrigin(input, null);
+  if (geocoded) {
+    return {
+      name: geocoded.label,
+      latitude: geocoded.lat,
+      longitude: geocoded.lng,
+    };
+  }
+
+  return null;
 }
 
 // ── Shared helper: run RAG + getResponse for a question string ────────────────
@@ -308,7 +343,7 @@ async function handleParking(interaction, userId, username) {
     const time = interaction.options.getString('time') ||
       new Date().toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit' });
 
-    const { building, lots } = findNearestLots(destination);
+    const building = await findBuilding(destination);
 
     if (!building) {
       await interaction.editReply(
@@ -317,16 +352,21 @@ async function handleParking(interaction, userId, username) {
       return;
     }
 
-    const lines = lots.map((lot) => {
-      const { eligible, permitOk, timeOk } = checkPermitEligibility(lot, permit, time);
+    const { lots } = await findNearestLots(building);
+
+    if (!lots.length) {
+      await interaction.editReply(`🅿️ No lots found near **${building.name}**.`);
+      return;
+    }
+
+    const lines = await Promise.all(lots.map(async (lot) => {
+      const { eligible, matchedRule } = await checkPermitEligibility(lot, permit, null, time);
       let status = '✅ Open to all';
       if (permit) {
-        status = eligible ? '✅ Eligible' : !permitOk ? '❌ Permit not valid here' : '❌ Outside hours';
-      } else if (!timeOk) {
-        status = '⚠️ Outside posted hours';
+        status = eligible ? `✅ Eligible (${matchedRule})` : '❌ Not eligible';
       }
       return `**${lot.name}** (${lot.campus}) — ${lot.distanceMiles.toFixed(2)} mi, ~${lot.walkMinutes} min walk — ${status}`;
-    });
+    }));
 
     const reply = [
       `🅿️ Nearest lots to **${building.name}**:`,
@@ -337,6 +377,8 @@ async function handleParking(interaction, userId, username) {
     await interaction.editReply(reply);
     logger.info('Handled /parking', { userId, destination, permit, time });
 }
+
+
 
 // ── /transit ──────────────────────────────────────────────────────────────
 // NJ Transit real-time departures via DepartureVision scraping
@@ -438,6 +480,16 @@ async function handleLeaveNow(interaction, userId, username) {
   logger.info('Handled /leavenow', { userId, destination, arrivalTime, from, homeCampus });
 }
 
+//// ── /Hour Convertor ─────────────────────────────────────────────────────────────────
+function formatDuration(minutes) {
+  if (minutes < 60) return `${minutes} min`;
+  const hours = Math.floor(minutes / 60);
+  const mins = minutes % 60;
+  if (mins === 0) return `${hours} hour${hours > 1 ? 's' : ''}`;
+  return `${hours} hour${hours > 1 ? 's' : ''} ${mins} min`;
+}
+
+
 // ── /compare ─────────────────────────────────────────────────────────────────
 // Transportation comparison — compares bus, walking, driving, biking, and train options.
 // Data sources: bus_routes (RAG), buildings (RAG), njtransit (RAG)
@@ -446,10 +498,74 @@ async function handleLeaveNow(interaction, userId, username) {
 //       for each mode, return a comparison embed sorted by speed.
 
 async function handleCompare(interaction, userId, username) {
-  // const from = interaction.options.getString('from');
-  // const to   = interaction.options.getString('to');
-  await interaction.editReply('⚖️ `/compare` — Transportation comparison coming soon.');
-  logger.info('Handled /compare (stub)', { userId });
+
+  
+  const fromInput = interaction.options.getString('from');
+  const toInput = interaction.options.getString('to');
+
+  const [originLocation, destLocation] = await Promise.all([
+    resolveLocation(fromInput),
+    resolveLocation(toInput),
+  ]);
+
+  if (!originLocation) {
+    await interaction.editReply(`⚖️ I couldn't find or locate "${fromInput}". Try a Rutgers building name or a full address/town.`);
+    return;
+  }
+  if (!destLocation) {
+    await interaction.editReply(`⚖️ I couldn't find or locate "${toInput}". Try a Rutgers building name or a full address/town.`);
+    return;
+  }
+
+  const travelPromise = getTravelTimes(
+    originLocation.latitude, originLocation.longitude,
+    destLocation.latitude, destLocation.longitude
+  );
+
+  const trainPromise = fetchNJTDepartures(fromInput).catch((err) => {
+    logger.error('handleCompare: train lookup failed', { err: err.message });
+    return null;
+  });
+
+  const [{ walking, driving }, trainResult] = await Promise.all([
+    travelPromise,
+    trainPromise,
+  ]);
+
+  const options = [];
+  if (walking !== null) options.push({ mode: 'Walk', minutes: walking, detail: formatDuration(walking) });
+  if (driving !== null) options.push({ mode: 'Drive', minutes: driving, detail: formatDuration(driving) });
+  if (trainResult && trainResult.departures?.length > 0) {
+    const next = trainResult.departures.find(d => !d.isCancelled) || trainResult.departures[0];
+    options.push({
+      mode: '🚆 Train',
+      minutes: null,
+      detail: `Next: ${next.scheduledTime} → ${next.destination}${next.status ? ` (${next.status})` : ''}`,    });
+  }
+
+  if (options.length === 0) {
+    await interaction.editReply(`⚖️ Couldn't compute any travel options between **${originLocation.name}** and **${destLocation.name}**. Please try again.`);
+    return;
+  }
+
+  const timed = options.filter(o => o.minutes !== null).sort((a, b) => a.minutes - b.minutes);
+  const untimed = options.filter(o => o.minutes === null);
+  const sorted = [...timed, ...untimed];
+  
+  const lines = [                                                    // ← replace this whole block
+    `⚖️**${originLocation.name} → ${destLocation.name}**`,
+    '',
+    ...sorted.flatMap((o, i) => [`${i === 0 ? '(Best) ' : ''}${o.mode} — ${o.detail}`, '']),
+  ];
+
+  const hasTrainOption = sorted.some(o => o.mode === '🚆 Train');
+  if (!hasTrainOption) {
+    lines.push('', '_💡 Tip: for train times, use the exact NJ Transit station name as "from" (e.g. "New Brunswick", "Newark Penn Station")._');
+  }
+
+  await interaction.editReply(lines.join('\n'));
+  logger.info('Handled /compare', { userId, from: fromInput, to: toInput, options: sorted.length });
+
 }
 
 // ── /alerts ─────────────────────────────────────────────────────────────────
@@ -676,7 +792,7 @@ async function handleHelp(interaction) {
     '`/parking <destination> [permit]` — Find nearby parking lots and permit requirements.',
     '`/transit <destination> [time]` — NJ Transit train and bus schedules for commuters.',
     '`/leavenow <destination> <arrival_time>` — When should you leave to arrive on time?',
-    '`/compare <from> <to>` — Compare bus, walking, driving, and train options side by side.',
+    '`/compare <from> <to>` — Compare walking, driving, and train options side by side. Use an exact NJ Transit station name (e.g. "New Brunswick") as `from` to include train.',
     '`/alerts [route]` — Live bus delays, detours, construction, and road closures.',
     '`/access <destination> [need]` — Accessible routes, entrances, and transportation.',
     '`/ask <question>` — Ask anything about Rutgers transportation.',
@@ -751,11 +867,11 @@ async function handleAutocomplete(interaction) {
 console.log("Autocomplete called!");
 
   try {
-    if (!['parking', 'leavenow'].includes(interaction.commandName)) {
+    if (!['parking', 'leavenow', 'compare', 'navigate', 'bus', 'transit',  ].includes(interaction.commandName)) {
       return interaction.respond([]);
     }
 
-    const focused = interaction.options.getFocused();
+  const focused = interaction.options.getFocused().replace(/,/g, '');
 
     let query = supabase
       .from("app_rutgers_buildings")
@@ -774,12 +890,16 @@ console.log("Autocomplete called!");
       return interaction.respond([]);
     }
 
-    await interaction.respond(
-      data.map((building) => ({
-        name: `${building.name} • ${building.campus.replace("Rutgers University - ", "")}`,
-        value: building.name
-      }))
-    );
+  await interaction.respond(
+  data.map((building) => {
+    const label = `${building.name} • ${building.campus.replace("Rutgers University - ", "")}`;
+    return {
+      name: label.length > 100 ? label.slice(0, 97) + '...' : label,
+      value: building.name.length > 100 ? building.name.slice(0, 100) : building.name,
+    };
+    })
+  );
+
   } catch (err) {
     logger.error("Autocomplete exception:", err.message);
     try { interaction.respond([]); } catch (_) {}

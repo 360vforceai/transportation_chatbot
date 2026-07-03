@@ -200,6 +200,26 @@ const commands = [
     ]
   },
   {
+    name: 'compare',
+    description: 'Compare walking, driving, and train options between two Rutgers locations',
+    options: [
+      {
+        name: 'from',
+        type: 3,
+        description: 'Building, address, or exact NJ Transit station name (e.g. "New Brunswick") for train option',
+        required: true,
+        autocomplete: true
+      },
+      {
+        name: 'to',
+        type: 3,
+        description: 'Destination building or location',
+        required: true,
+        autocomplete: true
+      }
+    ]
+  },
+  {
     name: 'help',
     description: 'Show all available commands',
     options: []

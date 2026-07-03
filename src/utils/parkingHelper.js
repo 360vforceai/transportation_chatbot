@@ -97,20 +97,21 @@ async function findBuilding(destination) {
   if (buildingError) { logger.error('Fuse search failed:', buildingError.message); return null; }
 
   const fuse = new Fuse(buildings, {
-    keys: ['name'],
-    threshold: 0.3,      // tightened from 0.4
-    ignoreLocation: true,
-    minMatchCharLength: 3 // bumped from 2 to reduce noise
-  });
+  keys: ['name'],
+  threshold: 0.2,
+  ignoreLocation: true,
+  minMatchCharLength: 3,
+  includeScore: true,
+});
 
-  const results = fuse.search(destination);
-  if (results.length) {
-    logger.info(`Fuzzy matched "${destination}" -> "${results[0].item.name}"`);
-    return results[0].item;
-  }
+const results = fuse.search(destination);
+if (results.length && results[0].score < 0.15) {
+  logger.info(`Fuzzy matched "${destination}" -> "${results[0].item.name}" (score: ${results[0].score})`);
+  return results[0].item;
+}
 
-  logger.info(`No building match found for "${destination}"`);
-  return null;
+logger.info(`No building match found for "${destination}"`);
+return null;
 }
 
 async function findNearestLots(building, limit = 3) {
