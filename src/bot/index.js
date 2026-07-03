@@ -2,6 +2,11 @@ require('dotenv').config();
 const { Client, GatewayIntentBits  } = require('discord.js');
 const logger = require('../utils/logger');
 const { handleInteraction, handleAutocomplete } = require('./interactionHandler');
+const { setStationList, refreshAliases } = require('../agents/njtransit_scraper'); 
+const trainStations = require('../data/trainStations.json');
+
+setStationList(trainStations);
+refreshAliases();
 
 const client = new Client({
   intents: [GatewayIntentBits.Guilds]

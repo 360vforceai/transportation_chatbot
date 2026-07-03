@@ -230,10 +230,15 @@ function formatNJTEmbed(result, limit = 8) {
   };
 }
 
+function getStationList() {
+  return stationList;
+}
+
 module.exports = {
   fetchNJTDepartures,
   formatNJTEmbed,
   resolveStation,
   setStationList,
   refreshAliases,
+  getStationList,
 };

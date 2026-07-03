@@ -790,11 +790,11 @@ async function handleHelp(interaction) {
     '`/bus <route>` — Live bus locations and next arrivals (e.g. LX, EE, H, F).',
     '`/navigate <from> <to> [mode]` — Step-by-step directions between Rutgers locations.',
     '`/parking <destination> [permit]` — Find nearby parking lots and permit requirements.',
-    '`/transit <destination> [time]` — NJ Transit train and bus schedules for commuters.',
+    '`/transit [station]` — NJ Transit train schedules for commuters.',
     '`/leavenow <destination> <arrival_time>` — When should you leave to arrive on time?',
     '`/compare <from> <to>` — Compare walking, driving, and train options side by side. Use an exact NJ Transit station name (e.g. "New Brunswick") as `from` to include train.',
     '`/alerts [route]` — Live bus delays, detours, construction, and road closures.',
-    '`/access <destination> [need]` — Accessible routes, entrances, and transportation.',
+    '`/access <topic>` — Accessible routes, entrances, and transportation.',
     '`/ask <question>` — Ask anything about Rutgers transportation.',
     '`/help` — Show this message.',
     '',
@@ -864,45 +864,69 @@ async function handleInteraction(interaction) {
 }
 
 async function handleAutocomplete(interaction) {
-console.log("Autocomplete called!");
 
   try {
-    if (!['parking', 'leavenow', 'compare', 'navigate', 'bus', 'transit',  ].includes(interaction.commandName)) {
-      return interaction.respond([]);
+    const commandName = interaction.commandName;
+
+    // ── Transit autocomplete ────────────────────────────────────────────────
+    if (commandName === 'transit') {
+      const focused = interaction.options.getFocused()?.toLowerCase().trim() || '';
+      const { getStationList } = require('../agents/njtransit_scraper');
+      const stations = getStationList();
+
+      if (!stations || stations.length === 0) {
+        logger.warn('Station list not loaded for autocomplete');
+        return interaction.respond([]);
+      }
+
+      const matched = stations.filter(s => {
+        const title = s.title.toLowerCase();
+        return title.includes(focused);
+      });
+
+      const choices = matched.slice(0, 25).map(s => ({
+        name: s.title,
+        value: s.title,
+      }));
+
+      await interaction.respond(choices);
+      return;
     }
 
-  const focused = interaction.options.getFocused().replace(/,/g, '');
-
-    let query = supabase
-      .from("app_rutgers_buildings")
-      .select("name, campus")
-      .limit(25);
-
-    if (focused) {
-      query = query.or(`name.ilike.${focused}%,name.ilike.%${focused}%`);
-    } else {
-      query = query.order('name', { ascending: true });
+    // ── Commands that use buildings from Supabase ──────────────────────────
+    if (['parking', 'leavenow', 'compare', 'navigate', 'bus'].includes(commandName)) {
+      const focused = interaction.options.getFocused().replace(/,/g, '');
+      let query = supabase
+        .from("app_rutgers_buildings")
+        .select("name, campus")
+        .limit(25);
+      if (focused) {
+        query = query.or(`name.ilike.${focused}%,name.ilike.%${focused}%`);
+      } else {
+        query = query.order('name', { ascending: true });
+      }
+      const { data, error } = await query;
+      if (error) {
+        logger.error("Autocomplete failed:", error.message);
+        return interaction.respond([]);
+      }
+      await interaction.respond(
+        data.map((building) => {
+          const label = `${building.name} • ${building.campus.replace("Rutgers University - ", "")}`;
+          return {
+            name: label.length > 100 ? label.slice(0, 97) + '...' : label,
+            value: building.name.length > 100 ? building.name.slice(0, 100) : building.name,
+          };
+        })
+      );
+      return;
     }
 
-    const { data, error } = await query;
-    if (error) {
-      logger.error("Autocomplete failed:", error.message);
-      return interaction.respond([]);
-    }
-
-  await interaction.respond(
-  data.map((building) => {
-    const label = `${building.name} • ${building.campus.replace("Rutgers University - ", "")}`;
-    return {
-      name: label.length > 100 ? label.slice(0, 97) + '...' : label,
-      value: building.name.length > 100 ? building.name.slice(0, 100) : building.name,
-    };
-    })
-  );
-
+    // For any other command, respond empty
+    await interaction.respond([]);
   } catch (err) {
     logger.error("Autocomplete exception:", err.message);
-    try { interaction.respond([]); } catch (_) {}
+    try { await interaction.respond([]); } catch (_) {}
   }
 }
 

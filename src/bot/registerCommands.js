@@ -53,6 +53,7 @@ const commands = [
         type: 3,
         description: 'Station name (e.g. "New Brunswick", "Newark Penn Station", "Trenton")',
         required: true,
+        autocomplete: true,
       },
       {
         name: 'limit',
